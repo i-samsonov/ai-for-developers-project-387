@@ -121,7 +121,8 @@ test("release-please completion can start trusted review without changing the un
   assert.doesNotMatch(event, /OPENCODE_API_KEY|actions\/checkout|pull-requests: write|workflow_run:/);
 });
 
-async function resolveReview({ run, candidates, currentMain, reviews = [], contexts, manualInputs, associated = candidates }) {
+async function resolveReview({ run, candidates, currentMain, reviews = [], contexts, manualInputs,
+  associated = candidates, manualContext }) {
   const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line === "          script: |") + 1;
@@ -141,12 +142,21 @@ async function resolveReview({ run, candidates, currentMain, reviews = [], conte
         get: async ({ pull_number }) => ({ data: candidates.find((pr) => pr.number === pull_number) }),
         listReviews: () => {},
       },
-      actions: { listWorkflowRunsForWorkflow: () => {} },
+      actions: {
+        listWorkflowRunsForWorkflow: () => {},
+        getWorkflowRun: async () => ({ data: manualContext ?? {
+          id: 42, path: ".github/workflows/opencode-review.yml",
+          event: "pull_request", conclusion: "success",
+          head_sha: candidates[0].head.sha,
+          head_repository: { full_name: "owner/repo" },
+          pull_requests: [{ number: candidates[0].number }],
+        } }),
+      },
     },
     paginate: async (method, params) => method === github.rest.repos.listPullRequestsAssociatedWithCommit ? associated
       : method === github.rest.pulls.list ? candidates
       : method === github.rest.actions.listWorkflowRunsForWorkflow ? (contexts ?? [{
-        id: 42, conclusion: "success", head_sha: params.head_sha,
+        id: 42, event: "pull_request", conclusion: "success", head_sha: params.head_sha,
         head_repository: { full_name: "owner/repo" }, pull_requests: [],
       }]) : reviews,
   };
@@ -211,14 +221,40 @@ test("release context with no pull_requests is linked by commit association for 
       repo: { full_name: "owner/repo" } },
   };
   const run = { name: "release-please", event: "push", head_branch: "main", head_sha: "main-sha" };
-  const contexts = [{ id: 42, conclusion: "success", head_sha: "release-sha",
+  const contexts = [{ id: 42, path: ".github/workflows/opencode-review.yml", event: "pull_request",
+    conclusion: "success", head_sha: "release-sha",
     head_repository: { full_name: "owner/repo" }, pull_requests: [] }];
   const expected = { number: "1", head_sha: "release-sha", base_sha: "main-sha" };
   assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: "main-sha", contexts }), expected);
   assert.deepEqual(await resolveReview({ candidates: [release], currentMain: "main-sha", contexts,
-    manualInputs: { pr_number: "1", context_run_id: "42" } }), expected);
+    manualContext: contexts[0], manualInputs: { pr_number: "1", context_run_id: "42" } }), expected);
   assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: "main-sha",
     contexts, associated: [{ number: 2 }] }), {});
+});
+
+test("manual review verifies the requested run directly when the filtered list is empty", async () => {
+  const pr = { number: 1, state: "open", user: { login: "github-actions[bot]" },
+    author_association: "NONE", base: { ref: "main", sha: "main-sha" },
+    head: { sha: "release-sha", ref: "release-please--branches--main--components--calendar-calls",
+      repo: { full_name: "owner/repo" } } };
+  const manualInputs = { pr_number: "1", context_run_id: "42" };
+  const expected = { number: "1", head_sha: "release-sha", base_sha: "main-sha" };
+  const options = { candidates: [pr], currentMain: "main-sha", contexts: [], manualInputs };
+  assert.deepEqual(await resolveReview({ ...options, associated: [] }), expected);
+  const contextRun = { id: 42, path: ".github/workflows/opencode-review.yml",
+    event: "pull_request", conclusion: "success", head_sha: "release-sha",
+    head_repository: { full_name: "owner/repo" }, pull_requests: [] };
+  assert.deepEqual(await resolveReview({ ...options, manualContext: contextRun }), expected);
+  assert.deepEqual(await resolveReview({ ...options, manualContext: contextRun, associated: [] }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualContext: { ...contextRun,
+    pull_requests: [{ number: 2 }] } }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualContext: { ...contextRun, path: ".github/workflows/other.yml" } }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualContext: { ...contextRun, head_sha: "old-sha" } }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualContext: { ...contextRun, event: "push" } }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualContext: { ...contextRun, conclusion: "failure" } }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualContext: { ...contextRun,
+    head_repository: { full_name: "other/repo" } } }), {});
+  assert.deepEqual(await resolveReview({ ...options, manualInputs: { ...manualInputs, context_run_id: "43" } }), {});
 });
 
 test("resolve tolerates deleted reviewers and only considers published reviews", async () => {

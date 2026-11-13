@@ -119,23 +119,36 @@ jobs:
                 // The review must still begin at an approved pull_request
                 // context run; a release-please push alone never unlocks the
                 // model secret. Manual dispatch handles late approvals.
-                const contexts = await github.paginate(github.rest.actions.listWorkflowRunsForWorkflow, {
-                  owner, repo, workflow_id: "opencode-review.yml",
-                  head_sha: pr.head.sha, event: "pull_request", per_page: 100,
-                })
                 const requestedRun = manual ? Number(context.payload.inputs.context_run_id) : undefined
-                const matchingContext = contexts.some((contextRun) =>
+                if (manual && (!Number.isSafeInteger(requestedRun) || requestedRun <= 0)) return
+                // A manually supplied run ID must be fetched directly. A
+                // filtered list may omit a run approved after its creation.
+                const contexts = manual
+                  ? [(await github.rest.actions.getWorkflowRun({
+                    owner, repo, run_id: requestedRun,
+                  })).data]
+                  : await github.paginate(github.rest.actions.listWorkflowRunsForWorkflow, {
+                    owner, repo, workflow_id: "opencode-review.yml",
+                    head_sha: pr.head.sha, event: "pull_request", per_page: 100,
+                  })
+                const matchingContext = contexts.find((contextRun) =>
                   contextRun.conclusion === "success" &&
+                  contextRun.event === "pull_request" &&
                   contextRun.head_sha === pr.head.sha &&
                   contextRun.head_repository?.full_name === `${owner}/${repo}` &&
+                  (!manual || contextRun.path === ".github/workflows/opencode-review.yml") &&
                   (!manual || contextRun.id === requestedRun))
                 // Run metadata may omit pull_requests for GITHUB_TOKEN-created
-                // PRs. Verify the commit-to-PR association independently.
-                const associated = matchingContext
-                  ? await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+                // PRs. Only then fall back to commit-to-PR association.
+                let belongsToPr = matchingContext?.pull_requests?.some((entry) =>
+                  entry.number === pr.number)
+                if (matchingContext && !matchingContext.pull_requests?.length) {
+                  const associated = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
                     owner, repo, commit_sha: pr.head.sha, per_page: 100,
-                  }) : []
-                if (!associated.some((entry) => entry.number === pr.number)) {
+                  })
+                  belongsToPr = associated.some((entry) => entry.number === pr.number)
+                }
+                if (!matchingContext || !belongsToPr) {
                   core.info("Release PR has no successful PR context run at this head SHA")
                   continue
                 }

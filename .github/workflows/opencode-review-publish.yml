@@ -18,8 +18,10 @@ name: Independent PR review
 # A workflow_run definition is loaded from main. Never checkout or execute
 # anything from the untrusted PR, even when its author is a trusted bot.
 concurrency:
-  group: independent-review-${{ github.event.workflow_run.head_repository.id || github.repository_id }}-${{ github.event.workflow_run.head_branch || inputs.pr_number }}
-  cancel-in-progress: true
+  # All paths for release PRs (including their pull_request context) must
+  # serialize through publish; resolve alone cannot prevent a second model run.
+  group: independent-review-${{ github.repository_id }}-${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.name == 'release-please' || startsWith(github.event.workflow_run.head_branch, 'release-please--branches--main--components--')) && 'release-please' || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
 
 jobs:
   resolve:
@@ -114,23 +116,29 @@ jobs:
                   head_sha: pr.head.sha, event: "pull_request", per_page: 100,
                 })
                 const requestedRun = manual ? Number(context.payload.inputs.context_run_id) : undefined
-                if (!contexts.some((contextRun) =>
+                const matchingContext = contexts.some((contextRun) =>
                   contextRun.conclusion === "success" &&
                   contextRun.head_sha === pr.head.sha &&
                   contextRun.head_repository?.full_name === `${owner}/${repo}` &&
-                  contextRun.pull_requests?.some((entry) => entry.number === pr.number) &&
-                  (!manual || contextRun.id === requestedRun))) {
+                  (!manual || contextRun.id === requestedRun))
+                // Run metadata may omit pull_requests for GITHUB_TOKEN-created
+                // PRs. Verify the commit-to-PR association independently.
+                const associated = matchingContext
+                  ? await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+                    owner, repo, commit_sha: pr.head.sha, per_page: 100,
+                  }) : []
+                if (!associated.some((entry) => entry.number === pr.number)) {
                   core.info("Release PR has no successful PR context run at this head SHA")
                   continue
                 }
-                const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                  owner, repo, pull_number: pr.number, per_page: 100,
-                })
-                if (reviews.some((review) => review.commit_id === pr.head.sha &&
-                    review.user.login === "github-actions[bot]")) {
-                  core.info("Release PR already reviewed at current head SHA")
-                  continue
-                }
+              }
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner, repo, pull_number: pr.number, per_page: 100,
+              })
+              if (reviews.some((review) => review.commit_id === pr.head.sha &&
+                  review.user.login === "github-actions[bot]")) {
+                core.info("Release PR already reviewed at current head SHA")
+                continue
               }
               core.setOutput("number", String(pr.number))
               core.setOutput("head_sha", pr.head.sha)
@@ -251,7 +259,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA" || exit 0
-          if gh api "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+          if gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
             --jq ".[] | select(.commit_id == \"$HEAD_SHA\" and .user.login == \"github-actions[bot]\") | .id" | grep -q .; then
             echo "Current head SHA has already been reviewed"
             exit 0

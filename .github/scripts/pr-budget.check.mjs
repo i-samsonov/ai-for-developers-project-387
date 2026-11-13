@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 
 const script = new URL("./pr-budget.mjs", import.meta.url);
 
@@ -101,6 +102,7 @@ test("PR event has no secrets; the trusted follow-up only reads PR diff as data"
   assert.doesNotMatch(review, /cp REVIEW\.md/);
   assert.match(review, /-f commit_id="\$HEAD_SHA"/);
   assert.match(review, /Current head SHA has already been reviewed/);
+  assert.match(review, /gh api --paginate "repos\/\$GH_REPO\/pulls\/\$PR_NUMBER\/reviews\?per_page=100"/);
 });
 
 test("release-please completion can start trusted review without changing the unprivileged PR stage", () => {
@@ -119,7 +121,7 @@ test("release-please completion can start trusted review without changing the un
   assert.doesNotMatch(event, /OPENCODE_API_KEY|actions\/checkout|pull-requests: write|workflow_run:/);
 });
 
-async function resolveReview({ run, candidates, currentMain, reviews = [], contexts, manualInputs }) {
+async function resolveReview({ run, candidates, currentMain, reviews = [], contexts, manualInputs, associated = candidates }) {
   const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line === "          script: |") + 1;
@@ -132,7 +134,7 @@ async function resolveReview({ run, candidates, currentMain, reviews = [], conte
     rest: {
       repos: {
         getBranch: async () => ({ data: { commit: { sha: currentMain } } }),
-        listPullRequestsAssociatedWithCommit: async () => ({ data: candidates }),
+        listPullRequestsAssociatedWithCommit: () => {},
       },
       pulls: {
         list: () => {},
@@ -141,7 +143,8 @@ async function resolveReview({ run, candidates, currentMain, reviews = [], conte
       },
       actions: { listWorkflowRunsForWorkflow: () => {} },
     },
-    paginate: async (method) => method === github.rest.pulls.list ? candidates
+    paginate: async (method) => method === github.rest.repos.listPullRequestsAssociatedWithCommit ? associated
+      : method === github.rest.pulls.list ? candidates
       : method === github.rest.actions.listWorkflowRunsForWorkflow ? (contexts ?? [{
         id: 42, conclusion: "success", head_sha: candidates[0].head.sha,
         head_repository: { full_name: "owner/repo" }, pull_requests: [{ number: candidates[0].number }],
@@ -191,4 +194,65 @@ test("normal PR context still requires the event head SHA", async () => {
   assert.deepEqual(await resolveReview({ run, candidates: [current], currentMain: "main-sha" }), {});
   assert.deepEqual(await resolveReview({ run: { ...run, head_sha: "new-sha" }, candidates: [current], currentMain: "main-sha" }),
     { number: "11", head_sha: "new-sha", base_sha: "main-sha" });
+  assert.deepEqual(await resolveReview({ run: { ...run, head_sha: "new-sha" }, candidates: [current], currentMain: "main-sha",
+    reviews: [{ commit_id: "new-sha", user: { login: "github-actions[bot]" } }] }), {});
+});
+
+test("release context with no pull_requests is linked by commit association for both trigger paths", async () => {
+  const release = {
+    number: 1, state: "open", user: { login: "github-actions[bot]" }, author_association: "NONE",
+    base: { ref: "main", sha: "main-sha" },
+    head: { sha: "release-sha", ref: "release-please--branches--main--components--calendar-calls",
+      repo: { full_name: "owner/repo" } },
+  };
+  const run = { name: "release-please", event: "push", head_branch: "main", head_sha: "main-sha" };
+  const contexts = [{ id: 42, conclusion: "success", head_sha: "release-sha",
+    head_repository: { full_name: "owner/repo" }, pull_requests: [] }];
+  const expected = { number: "1", head_sha: "release-sha", base_sha: "main-sha" };
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: "main-sha", contexts }), expected);
+  assert.deepEqual(await resolveReview({ candidates: [release], currentMain: "main-sha", contexts,
+    manualInputs: { pr_number: "1", context_run_id: "42" } }), expected);
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: "main-sha",
+    contexts, associated: [{ number: 2 }] }), {});
+});
+
+test("automatic and manual release review share a non-cancelling concurrency group", () => {
+  const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  const group = review.match(/^\s+group: (.*)$/m)?.[1];
+  assert.ok(group);
+  assert.match(group, /\$\{\{ github\.repository_id \}\}/);
+  assert.match(group, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(group, /github\.event\.workflow_run\.name == 'release-please'/);
+  assert.match(group, /startsWith\(github\.event\.workflow_run\.head_branch, 'release-please--branches--main--components--'\)/);
+  assert.match(group, /&& 'release-please' \|\| github\.event\.workflow_run\.head_branch/);
+  assert.match(review, /cancel-in-progress: false/);
+  assert.match(review, /Release PR already reviewed at current head SHA/);
+});
+
+test("publish skips a matching review beyond the first page", () => {
+  const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  const publish = workflow.slice(workflow.indexOf("      - name: Publish review bound to the checked SHA"));
+  const body = publish.slice(publish.indexOf("        run: |\n") + "        run: |\n".length)
+    .split("\n").map((line) => line.slice(10)).join("\n");
+  const mock = `
+    gh() {
+      if [[ "$1" == pr ]]; then printf '%s\\n' "$HEAD_SHA"
+      elif [[ "$1" == api && "$2" == --paginate ]]; then printf '%s\\n' 101
+      elif [[ "$1" == api && "$2" == --method ]]; then echo posted > "$RUNNER_TEMP/posted"
+      fi
+    }
+  `;
+  const folder = mkdtempSync(join(tmpdir(), "review-publish-"));
+  try {
+    // The mock's matching review exists only on page two, returned by --paginate.
+    const result = spawnSync("bash", ["-c", `${mock}\n${body}`], {
+      env: { ...process.env, HEAD_SHA: "release-sha", PR_NUMBER: "1",
+        GH_REPO: "owner/repo", RUNNER_TEMP: folder }, encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Current head SHA has already been reviewed/);
+    assert.throws(() => readFileSync(join(folder, "posted")));
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
 });

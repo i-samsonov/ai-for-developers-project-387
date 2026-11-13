@@ -2,26 +2,42 @@ name: Independent PR review
 
 "on":
   workflow_run:
-    workflows: ["PR review context"]
+    workflows: ["PR review context", "release-please"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Release-please PR number"
+        required: true
+        type: number
+      context_run_id:
+        description: "Successful PR review context run ID for this PR head"
+        required: true
+        type: number
 
 # A workflow_run definition is loaded from main. Never checkout or execute
 # anything from the untrusted PR, even when its author is a trusted bot.
 concurrency:
-  group: independent-review-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  group: independent-review-${{ github.event.workflow_run.head_repository.id || github.repository_id }}-${{ github.event.workflow_run.head_branch || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
   resolve:
     if: |
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.event == 'pull_request' ||
+        (github.event.workflow_run.name == 'release-please' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       pull-requests: read
       contents: read
+      actions: read
     outputs:
       number: ${{ steps.pr.outputs.number }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
@@ -32,17 +48,46 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const run = context.payload.workflow_run
+            const run = context.payload.workflow_run || {}
             const owner = context.repo.owner
             const repo = context.repo.repo
-            let candidates = run.pull_requests || []
-            // GITHUB_TOKEN-created PR runs can omit pull_requests. Resolve the
-            // head commit through GitHub instead of trusting an artifact.
-            if (!candidates.length) {
-              const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner, repo, commit_sha: run.head_sha, per_page: 100,
+            const manual = context.eventName === "workflow_dispatch"
+            const releaseRun = manual || (run.name === "release-please" &&
+              run.event === "push" && run.head_branch === "main")
+            let candidates
+            let mainSha
+            if (releaseRun) {
+              // The bot's PR may start the unprivileged pull_request job but
+              // GitHub need not produce its downstream workflow_run event.
+              // Only a successful, current release-please run from main can
+              // select a release PR. Never trust a PR artifact or checkout.
+              const { data: main } = await github.rest.repos.getBranch({
+                owner, repo, branch: "main",
               })
-              candidates = response.data
+              mainSha = main.commit.sha
+              if (!manual && run.head_sha !== mainSha) {
+                core.info("Release run is no longer at current main")
+                return
+              }
+              if (manual) {
+                const number = Number(context.payload.inputs.pr_number)
+                if (!Number.isSafeInteger(number) || number <= 0) return
+                candidates = [{ number }]
+              } else {
+                candidates = await github.paginate(github.rest.pulls.list, {
+                  owner, repo, state: "open", base: "main", per_page: 100,
+                })
+              }
+            } else {
+              candidates = run.pull_requests || []
+              // GITHUB_TOKEN-created PR runs can omit pull_requests. Resolve the
+              // head commit through GitHub instead of trusting an artifact.
+              if (!candidates.length) {
+                const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner, repo, commit_sha: run.head_sha, per_page: 100,
+                })
+                candidates = response.data
+              }
             }
             for (const candidate of candidates) {
               const response = await github.rest.pulls.get({
@@ -52,15 +97,47 @@ jobs:
               const trustedAuthor = pr.user.login === owner ||
                 ["OWNER", "MEMBER", "COLLABORATOR"].includes(pr.author_association) ||
                 ["opencode-agent[bot]", "github-actions[bot]"].includes(pr.user.login)
+              if (releaseRun &&
+                  (pr.user.login !== "github-actions[bot]" ||
+                   !pr.head.ref.startsWith("release-please--branches--main--components--") ||
+                   pr.base.sha !== mainSha)) continue
               if (pr.state !== "open" || pr.base.ref !== "main" ||
                   pr.head.repo?.full_name !== `${owner}/${repo}` ||
-                  pr.head.sha !== run.head_sha || !trustedAuthor) continue
+                  (releaseRun ? !pr.head.sha : pr.head.sha !== run.head_sha) ||
+                  !trustedAuthor) continue
+              if (releaseRun) {
+                // The review must still begin at an approved pull_request
+                // context run; a release-please push alone never unlocks the
+                // model secret. Manual dispatch handles late approvals.
+                const contexts = await github.paginate(github.rest.actions.listWorkflowRunsForWorkflow, {
+                  owner, repo, workflow_id: "opencode-review.yml",
+                  head_sha: pr.head.sha, event: "pull_request", per_page: 100,
+                })
+                const requestedRun = manual ? Number(context.payload.inputs.context_run_id) : undefined
+                if (!contexts.some((contextRun) =>
+                  contextRun.conclusion === "success" &&
+                  contextRun.head_sha === pr.head.sha &&
+                  contextRun.head_repository?.full_name === `${owner}/${repo}` &&
+                  contextRun.pull_requests?.some((entry) => entry.number === pr.number) &&
+                  (!manual || contextRun.id === requestedRun))) {
+                  core.info("Release PR has no successful PR context run at this head SHA")
+                  continue
+                }
+                const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                  owner, repo, pull_number: pr.number, per_page: 100,
+                })
+                if (reviews.some((review) => review.commit_id === pr.head.sha &&
+                    review.user.login === "github-actions[bot]")) {
+                  core.info("Release PR already reviewed at current head SHA")
+                  continue
+                }
+              }
               core.setOutput("number", String(pr.number))
               core.setOutput("head_sha", pr.head.sha)
               core.setOutput("base_sha", pr.base.sha)
               return
             }
-            core.info("No current trusted same-repo PR at this run's head SHA")
+            core.info("No current trusted same-repo PR for this workflow run")
 
   review:
     needs: resolve
@@ -174,6 +251,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA" || exit 0
+          if gh api "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+            --jq ".[] | select(.commit_id == \"$HEAD_SHA\" and .user.login == \"github-actions[bot]\") | .id" | grep -q .; then
+            echo "Current head SHA has already been reviewed"
+            exit 0
+          fi
           gh api --method POST "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" \
             -f event=COMMENT -f commit_id="$HEAD_SHA" \
             -f body="Ревью коммита \`$HEAD_SHA\`:

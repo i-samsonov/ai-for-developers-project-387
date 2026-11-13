@@ -90,7 +90,7 @@ test("PR event has no secrets; the trusted follow-up only reads PR diff as data"
   assert.match(event, /pull_request:/);
   assert.match(event, /run: \|\n\s+printf 'PR #%s head %s\\n' "\$PR_NUMBER" "\$HEAD_SHA"/);
   assert.doesNotMatch(event, /OPENCODE_API_KEY|actions\/checkout|pull-requests: write|workflow_run:/);
-  assert.match(review, /workflow_run:[\s\S]*?workflows: \["PR review context"\]/);
+  assert.match(review, /workflow_run:[\s\S]*?workflows: \["PR review context", "release-please"\]/);
   assert.doesNotMatch(review, /pull_request_target:|ref: \$\{\{ .*head\.sha \}\}/);
   assert.ok(review.indexOf("- name: Install OpenCode CLI outside any checkout") < review.indexOf("- uses: actions/checkout@v4"));
   assert.match(review, /working-directory: \$\{\{ runner\.temp \}\}/);
@@ -100,4 +100,95 @@ test("PR event has no secrets; the trusted follow-up only reads PR diff as data"
   assert.match(review, /git ls-tree "\$trusted_sha" REVIEW\.md/);
   assert.doesNotMatch(review, /cp REVIEW\.md/);
   assert.match(review, /-f commit_id="\$HEAD_SHA"/);
+  assert.match(review, /Current head SHA has already been reviewed/);
+});
+
+test("release-please completion can start trusted review without changing the unprivileged PR stage", () => {
+  const event = readFileSync(new URL("../workflows/opencode-review.yml", import.meta.url), "utf8");
+  const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  assert.match(review, /workflows: \["PR review context", "release-please"\]/);
+  assert.match(review, /run\.name === "release-please"/);
+  assert.match(review, /run\.event === "push"/);
+  assert.match(review, /run\.head_branch === "main"/);
+  assert.match(review, /run\.head_sha !== mainSha/);
+  assert.match(review, /pr\.head\.ref\.startsWith\("release-please--branches--main--components--"\)/);
+  assert.match(review, /pr\.user\.login !== "github-actions\[bot\]"/);
+  assert.match(review, /workflow_dispatch:/);
+  assert.match(review, /contextRun\.conclusion === "success"/);
+  assert.match(review, /github\.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(event, /OPENCODE_API_KEY|actions\/checkout|pull-requests: write|workflow_run:/);
+});
+
+async function resolveReview({ run, candidates, currentMain, reviews = [], contexts, manualInputs }) {
+  const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  const lines = workflow.split("\n");
+  const start = lines.findIndex((line) => line === "          script: |") + 1;
+  assert.ok(start > 0);
+  const end = lines.findIndex((line, index) => index >= start && line === "  review:");
+  assert.ok(end > start);
+  const source = lines.slice(start, end).map((line) => line.slice(12)).join("\n");
+  const outputs = {};
+  const github = {
+    rest: {
+      repos: {
+        getBranch: async () => ({ data: { commit: { sha: currentMain } } }),
+        listPullRequestsAssociatedWithCommit: async () => ({ data: candidates }),
+      },
+      pulls: {
+        list: () => {},
+        get: async ({ pull_number }) => ({ data: candidates.find((pr) => pr.number === pull_number) }),
+        listReviews: () => {},
+      },
+      actions: { listWorkflowRunsForWorkflow: () => {} },
+    },
+    paginate: async (method) => method === github.rest.pulls.list ? candidates
+      : method === github.rest.actions.listWorkflowRunsForWorkflow ? (contexts ?? [{
+        id: 42, conclusion: "success", head_sha: candidates[0].head.sha,
+        head_repository: { full_name: "owner/repo" }, pull_requests: [{ number: candidates[0].number }],
+      }]) : reviews,
+  };
+  const context = { eventName: manualInputs ? "workflow_dispatch" : "workflow_run",
+    payload: { workflow_run: run, inputs: manualInputs }, repo: { owner: "owner", repo: "repo" } };
+  const core = { setOutput: (key, value) => { outputs[key] = value; }, info: () => {} };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  await new AsyncFunction("github", "context", "core", source)(github, context, core);
+  return outputs;
+}
+
+test("release-please resolves only a current same-repo bot PR and skips previously reviewed heads", async () => {
+  const main = "main-sha";
+  const run = { name: "release-please", event: "push", head_branch: "main", head_sha: main };
+  const release = {
+    number: 1, state: "open", user: { login: "github-actions[bot]" },
+    author_association: "NONE",
+    base: { ref: "main", sha: main },
+    head: { sha: "release-sha", ref: "release-please--branches--main--components--calendar-calls", repo: { full_name: "owner/repo" } },
+  };
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: main }), {
+    number: "1", head_sha: "release-sha", base_sha: main,
+  });
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: "new-main" }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, head: { ...release.head, repo: { full_name: "fork/repo" } } }], currentMain: main }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, user: { login: "stranger" } }], currentMain: main }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, head: { ...release.head, ref: "feat/not-a-release" } }], currentMain: main }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, base: { ref: "main", sha: "old-main" } }], currentMain: main }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: main, reviews: [{ commit_id: "release-sha", user: { login: "github-actions[bot]" } }] }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: main, contexts: [] }), {});
+  assert.deepEqual(await resolveReview({ run: undefined, candidates: [release], currentMain: main,
+    manualInputs: { pr_number: "1", context_run_id: "42" } }), {
+    number: "1", head_sha: "release-sha", base_sha: main,
+  });
+  assert.deepEqual(await resolveReview({ run: undefined, candidates: [release], currentMain: main,
+    manualInputs: { pr_number: "1", context_run_id: "43" } }), {});
+});
+
+test("normal PR context still requires the event head SHA", async () => {
+  const current = { number: 11, state: "open", user: { login: "owner" },
+    author_association: "OWNER", base: { ref: "main", sha: "main-sha" },
+    head: { sha: "new-sha", repo: { full_name: "owner/repo" } } };
+  const run = { name: "PR review context", event: "pull_request",
+    head_sha: "old-sha", pull_requests: [{ number: 11 }] };
+  assert.deepEqual(await resolveReview({ run, candidates: [current], currentMain: "main-sha" }), {});
+  assert.deepEqual(await resolveReview({ run: { ...run, head_sha: "new-sha" }, candidates: [current], currentMain: "main-sha" }),
+    { number: "11", head_sha: "new-sha", base_sha: "main-sha" });
 });

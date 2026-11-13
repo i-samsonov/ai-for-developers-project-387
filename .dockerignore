@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-server
+.git
+.github
+.idea
+.vitest
+*.sqlite
+*.sqlite.tmp
+*.log
+README.md

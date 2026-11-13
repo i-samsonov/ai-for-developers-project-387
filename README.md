@@ -10,20 +10,71 @@
 
 ## Стек
 
-- Разное
+- React, TypeScript, Vite
+- Tailwind CSS, shadcn/ui
+- Fastify (API), Vitest (тесты), Oxlint (линтер)
+
+## API-контракт
+
+Рукописный источник контракта — `api/main.tsp`. Выполните `npm run generate:api`, чтобы обновить OpenAPI (`generated/@typespec/openapi3/openapi.json`), типизированный клиент (`src/generated/sdk/`) и серверные типы, JSON-схемы валидации и регистрацию маршрутов (`server/generated/`). Эти артефакты не редактируются вручную. `npm run check:generated` проверяет повторяемость генерации и выполняется в CI после lint → test → build.
+
+Серверные маршруты подключаются через `registerCalendarRoutes(app, handlers)`; генератор никогда не перезаписывает бизнес-логику. Все шесть операций доступны. Админский API не защищён авторизацией: приложение предназначено только для локального учебного использования, не размещайте его публично с реальными персональными данными.
+
+## История проекта
+
+Приложение перенесено из [первого проекта «Календарь звонков»](https://github.com/i-samsonov/ai-for-developers-project-386). Исходные [спецификация](https://github.com/i-samsonov/ai-for-developers-project-386/issues/11), [карта решений](https://github.com/i-samsonov/ai-for-developers-project-386/issues/2) и [обсуждения решений](https://github.com/i-samsonov/ai-for-developers-project-386/issues?q=is%3Aissue+is%3Aclosed) сохранены в прежнем репозитории. Новые задачи ведутся в [Issues этого репозитория](https://github.com/i-samsonov/ai-for-developers-project-387/issues).
 
 ## Установка
 
-<!-- Опишите установку: клонирование, зависимости, переменные окружения -->
+Рекомендуется Node.js 22.18+ и npm (при установке на Node.js 22.12 часть зависимостей предупреждает о несовместимой версии). По умолчанию API хранит данные в `calendar.sqlite` (SQLite, файл исключён из Git); путь можно изменить через `DATABASE_PATH`.
 
 ```bash
 git clone https://github.com/i-samsonov/ai-for-developers-project-387.git
 cd ai-for-developers-project-387
+npm install
 ```
 
 ## Использование
 
-<!-- Добавьте примеры запуска и запись asciinema — именно это смотрит работодатель -->
+Запустите фронтенд и API в двух терминалах:
+
+```bash
+npm run dev
+npm run dev:api
+```
+
+Откройте адрес, который выведет Vite (обычно http://localhost:5173). Vite проксирует `/api` к http://127.0.0.1:3000; если API запущен с другим `PORT`, задайте тот же `PORT` при старте Vite. Vite обновляет страницу при изменениях кода, а `tsx watch` перезапускает API. Остановить серверы можно сочетанием Ctrl+C.
+
+Проверки и просмотр собранной версии локально:
+
+```bash
+npm run lint
+npm test
+npm run build
+npm run check:generated
+npm run preview
+```
+
+`npm run preview` поднимает локальный сервер для фронтенда из `dist/`. После сборки `npm run start:api` запускает Fastify, который отдаёт фронтенд из `dist/`, API по `/api` и проверку здоровья по `/health` на одном порту (по умолчанию 3000, либо из `PORT`).
+
+## Docker и деплой
+
+Работающее приложение из первого проекта: https://calendar-calls-386.onrender.com (проверка `/health` возвращает HTTP 200).
+
+```bash
+docker build -t calendar-calls .
+docker run --rm -e PORT=8080 -p 8080:8080 calendar-calls
+```
+
+Откройте http://localhost:8080 и http://localhost:8080/health. Контейнер слушает `0.0.0.0` и использует `PORT`, переданный платформой. Файл базы по умолчанию хранится в `/data/calendar.sqlite`; без подключённого постоянного тома данные теряются при пересоздании контейнера. Для постоянного хранения подключите том к `/data` или задайте `DATABASE_PATH` на путь в смонтированном каталоге.
+
+Проверки запускаются также в GitHub Actions (`.github/workflows/ci.yml`). Файл `.github/workflows/hexlet-check.yml` отвечает за отдельные проверки Хекслета.
+
+## Релизы
+
+Используйте [Conventional Commits](https://www.conventionalcommits.org/): `feat: ...`, `fix: ...`, `chore: ...`; для несовместимых изменений — `feat!: ...`. Workflow `.github/workflows/release-please.yml` на ветке `main` поддерживает release-PR, changelog и версии. В настройках репозитория GitHub включите **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**. Для запуска CI на автоматически созданных release-PR добавьте секрет `RELEASE_PLEASE_TOKEN` (fine-grained PAT с доступом к Contents и Pull requests); без него action использует `GITHUB_TOKEN`, но созданные им PR сами не запустят другие workflow.
+
+Новые компоненты shadcn/ui можно добавлять через `npx shadcn@latest add <имя>`; CLI не установлен как зависимость приложения.
 
 ---
 

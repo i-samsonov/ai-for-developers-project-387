@@ -101,6 +101,31 @@ it('confirms a guest booking with its details and lets the guest start again', a
   } finally { await closeServer(app) }
 })
 
+it('lets the guest add a topic, then shows it only beside that booking to the owner', async () => {
+  const day = today()
+  const app = await server(() => new Date(`${day}T09:00:00Z`))
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
+    await app.inject({ method: 'POST', url: '/api/bookings', payload: { eventTypeId: 'intro', startsAt: `${dayAt(day, 1)}T08:00:00Z`, guestName: 'Без темы', guestEmail: 'other@example.com' } })
+    window.location.hash = '#/booking'
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Знакомство.*Поговорим.*30 мин/ }))
+    fireEvent.click(screen.getByRole('button', { name: dateLabel(dayAt(day, 1)) }))
+    fireEvent.click(await screen.findByRole('button', { name: /09:00 - 09:30.*Свободно/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Продолжить' }))
+    fireEvent.change(screen.getByLabelText('Имя'), { target: { value: 'С темой' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'guest@example.com' } })
+    fireEvent.change(screen.getByLabelText('Тема разговора (необязательно)'), { target: { value: 'План проекта' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить запись' }))
+    expect(await screen.findByRole('heading', { name: 'Бронь подтверждена. До встречи!' })).toBeTruthy()
+    expect(screen.queryByText('План проекта')).toBeNull()
+    fireEvent.click(screen.getByRole('link', { name: 'Предстоящие события' }))
+    const topic = await screen.findByText('Тема разговора: План проекта')
+    expect(topic.closest('li')).toHaveProperty('textContent', expect.stringContaining('С темой · guest@example.com'))
+    expect(screen.getByText(/Без темы · other@example.com/).closest('li')?.textContent).not.toContain('План проекта')
+  } finally { await closeServer(app) }
+})
+
 it('reports a newly occupied slot and lets the guest choose another', async () => {
   const day = today()
   const tomorrow = dayAt(day, 1)
@@ -116,11 +141,56 @@ it('reports a newly occupied slot and lets the guest choose another', async () =
     await app.inject({ method: 'POST', url: '/api/bookings', payload: { eventTypeId: 'intro', startsAt: `${tomorrow}T06:00:00Z`, guestName: 'Другой', guestEmail: 'other@example.com' } })
     fireEvent.change(screen.getByLabelText('Имя'), { target: { value: 'Гость' } })
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'guest@example.com' } })
+    fireEvent.change(screen.getByLabelText('Тема разговора (необязательно)'), { target: { value: 'Важный вопрос' } })
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить запись' }))
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Время уже занято. Выберите другой слот.')
+    const bookings = (await app.inject('/api/admin/bookings')).json()
+    expect(bookings).toHaveLength(1)
+    expect(bookings[0]).not.toHaveProperty('topic')
     fireEvent.click(screen.getByRole('button', { name: 'Назад' }))
     expect(await screen.findByRole('button', { name: /09:00 - 09:30.*Занято/ })).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: /09:30 - 10:00.*Свободно/ })).toHaveProperty('disabled', false)
+  } finally { await closeServer(app) }
+})
+
+it('rejects an overlong topic in the guest form without creating a booking', async () => {
+  const day = today()
+  const app = await server(() => new Date(`${day}T09:00:00Z`))
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
+    window.location.hash = '#/booking'
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Знакомство.*Поговорим.*30 мин/ }))
+    fireEvent.click(screen.getByRole('button', { name: dateLabel(dayAt(day, 1)) }))
+    fireEvent.click(await screen.findByRole('button', { name: /09:00 - 09:30.*Свободно/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Продолжить' }))
+    fireEvent.change(screen.getByLabelText('Имя'), { target: { value: 'Гость' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'guest@example.com' } })
+    fireEvent.change(screen.getByLabelText('Тема разговора (необязательно)'), { target: { value: 'а'.repeat(201) } })
+    fireEvent.submit(screen.getByRole('button', { name: 'Подтвердить запись' }).closest('form')!)
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Тема разговора не может быть длиннее 200 символов.')
+    expect((await app.inject('/api/admin/bookings')).json()).toEqual([])
+  } finally { await closeServer(app) }
+})
+
+it('accepts a topic of 150 emoji as 150 characters through the real API', async () => {
+  const day = today()
+  const topic = '😀'.repeat(150)
+  const app = await server(() => new Date(`${day}T09:00:00Z`))
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
+    window.location.hash = '#/booking'
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Знакомство.*Поговорим.*30 мин/ }))
+    fireEvent.click(screen.getByRole('button', { name: dateLabel(dayAt(day, 1)) }))
+    fireEvent.click(await screen.findByRole('button', { name: /09:00 - 09:30.*Свободно/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Продолжить' }))
+    fireEvent.change(screen.getByLabelText('Имя'), { target: { value: 'Гость' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'guest@example.com' } })
+    fireEvent.change(screen.getByLabelText('Тема разговора (необязательно)'), { target: { value: topic } })
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить запись' }))
+    expect(await screen.findByRole('heading', { name: 'Бронь подтверждена. До встречи!' })).toBeTruthy()
+    expect((await app.inject('/api/admin/bookings')).json()[0].topic).toBe(topic)
   } finally { await closeServer(app) }
 })
 

@@ -84,6 +84,8 @@ model CreateBooking {
   guestName: string;
   @format("email") @maxLength(254)
   guestEmail: string;
+  @maxLength(200)
+  topic?: string;
 }
 
 model BookingConfirmation {
@@ -101,6 +103,7 @@ model UpcomingBooking {
   endsAt: utcDateTime;
   guestName: string;
   guestEmail: string;
+  topic?: string;
 }
 
 @route("/api")

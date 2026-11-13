@@ -24,6 +24,7 @@ export type CreateBooking = {
     startsAt: string;
     guestName: string;
     guestEmail: string;
+    topic?: string;
 };
 
 export type CreateEventType = {
@@ -74,6 +75,7 @@ export type UpcomingBooking = {
     endsAt: string;
     guestName: string;
     guestEmail: string;
+    topic?: string;
 };
 
 export type UpdateEventType = {

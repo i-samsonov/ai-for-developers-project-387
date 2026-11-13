@@ -13,7 +13,7 @@ const slotStart = (date: string, index: number) => dayStart(date) + (9 * 60 + in
 const failure = (code: string, message: string) => ({ code, message })
 
 type EventRow = EventType
-type BookingRow = { id: number; eventTypeId: string; startsAt: number; endsAt: number; guestName: string; guestEmail: string }
+type BookingRow = { id: number; eventTypeId: string; startsAt: number; endsAt: number; guestName: string; guestEmail: string; topic: string | null }
 
 export function createApp(options: { databasePath?: string; now?: () => Date; logger?: boolean; staticRoot?: string } = {}) {
   const app = Fastify({ logger: options.logger ?? true })
@@ -91,6 +91,7 @@ export function createApp(options: { databasePath?: string; now?: () => Date; lo
     CalendarApi_createBooking: async (request, reply) => {
       const { eventTypeId, startsAt, guestEmail } = request.body
       const guestName = request.body.guestName.trim()
+      const topic = request.body.topic?.trim() || null
       if (!guestName || guestName.length > 100 || guestEmail.trim() !== guestEmail) return reply.code(400).send(failure('invalid_request', 'Проверьте имя и email'))
       const event = findType(eventTypeId)
       if (!event) return reply.code(404).send(failure('not_found', 'Тип события не найден'))
@@ -100,7 +101,7 @@ export function createApp(options: { databasePath?: string; now?: () => Date; lo
       // Synchronous transaction serializes the overlap check and insertion on this SQLite database.
       const insert = db.transaction(() => {
         if (overlap(end, start)) return false
-        db.run('INSERT INTO bookings (eventTypeId, startsAt, endsAt, guestName, guestEmail) VALUES (?, ?, ?, ?, ?)', eventTypeId, start, end, guestName, guestEmail)
+        db.run('INSERT INTO bookings (eventTypeId, startsAt, endsAt, guestName, guestEmail, topic) VALUES (?, ?, ?, ?, ?, ?)', eventTypeId, start, end, guestName, guestEmail, topic)
         return true
       })
       if (!insert) return reply.code(409).send(failure('conflict', 'Время уже занято, выберите другой слот'))
@@ -108,7 +109,7 @@ export function createApp(options: { databasePath?: string; now?: () => Date; lo
     },
     CalendarApi_listUpcomingBookings: async () => {
       const rows = db.all(`SELECT b.*, e.id AS typeId, e.name, e.description FROM bookings b JOIN event_types e ON e.id = b.eventTypeId WHERE b.startsAt > ? ORDER BY b.startsAt, b.id`, now()) as (BookingRow & { typeId: string; name: string; description: string })[]
-      return rows.map(({ id, typeId, name, description, startsAt, endsAt, guestName, guestEmail }): UpcomingBooking => ({ id, eventType: { id: typeId, name, description, durationMinutes: (endsAt - startsAt) / 60_000 }, startsAt: new Date(startsAt).toISOString(), endsAt: new Date(endsAt).toISOString(), guestName, guestEmail }))
+      return rows.map(({ id, typeId, name, description, startsAt, endsAt, guestName, guestEmail, topic }): UpcomingBooking => ({ id, eventType: { id: typeId, name, description, durationMinutes: (endsAt - startsAt) / 60_000 }, startsAt: new Date(startsAt).toISOString(), endsAt: new Date(endsAt).toISOString(), guestName, guestEmail, ...(topic ? { topic } : {}) }))
     },
     CalendarApi_deleteBooking: async (request, reply) => {
       const { id } = request.params

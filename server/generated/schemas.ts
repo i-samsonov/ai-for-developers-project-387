@@ -57,6 +57,9 @@ export const routeSchemas = {
             },
             "guestEmail": {
               "type": "string"
+            },
+            "topic": {
+              "type": "string"
             }
           }
         }
@@ -182,6 +185,10 @@ export const routeSchemas = {
           "type": "string",
           "maxLength": 254,
           "format": "email"
+        },
+        "topic": {
+          "type": "string",
+          "maxLength": 200
         }
       }
     },

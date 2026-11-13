@@ -53,12 +53,6 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: node .github/scripts/pr-budget.mjs
 
-      # Only this successful step marks an attempt as spent. Denied requests
-      # never consume another attempt; re-runs are checked again from history.
-      - name: Budget admitted
-        if: steps.budget.outputs.allowed == 'true'
-        run: echo 'PR request admitted before model invocation'
-
       - name: Verify model key
         id: key
         if: github.event_name == 'issue_comment' && !github.event.issue.pull_request || steps.budget.outputs.allowed == 'true'
@@ -67,6 +61,12 @@ jobs:
         run: |
           test -n "$OPENCODE_API_KEY"
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      # Only this successful step marks an attempt as spent. Missing model
+      # credentials and rejected requests do not consume an attempt.
+      - name: Budget admitted
+        if: steps.budget.outputs.allowed == 'true' && steps.key.outputs.ready == 'true'
+        run: echo 'PR request admitted before model invocation'
 
       - name: Resolve PR head after trusted budget check
         id: pr_head

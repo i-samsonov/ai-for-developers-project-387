@@ -81,11 +81,19 @@ test("budget guard is checked out from the trusted repository branch", () => {
   assert.ok(workflow.indexOf("- name: Budget admitted") < workflow.indexOf("- name: Checkout PR head for the agent"));
   assert.ok(workflow.indexOf("- name: Checkout PR head for the agent") < workflow.indexOf("- name: Run OpenCode"));
   assert.match(workflow, /- name: Checkout PR head for the agent[\s\S]*?ref: \$\{\{ steps\.pr_head\.outputs\.sha \}\}/);
+  assert.ok(workflow.indexOf("- name: Verify model key") < workflow.indexOf("- name: Budget admitted"));
 });
 
-test("review CLI is installed outside the PR before checkout", () => {
+test("review runs from the trusted base and only reads PR diff as data", () => {
   const workflow = readFileSync(new URL("../workflows/opencode-review.yml", import.meta.url), "utf8");
+  assert.match(workflow, /pull_request_target:/);
+  assert.doesNotMatch(workflow, /^\s+pull_request:/m);
   assert.ok(workflow.indexOf("- name: Install OpenCode CLI outside PR checkout") < workflow.indexOf("- uses: actions/checkout@v4"));
   assert.match(workflow, /working-directory: \$\{\{ runner\.temp \}\}/);
+  assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  assert.match(workflow, /git fetch --no-tags --depth=1 origin "\$HEAD_SHA"/);
+  assert.match(workflow, /git ls-tree "\$BASE_SHA" REVIEW\.md/);
+  assert.doesNotMatch(workflow, /cp REVIEW\.md/);
   assert.match(workflow, /-f commit_id="\$HEAD_SHA"/);
 });

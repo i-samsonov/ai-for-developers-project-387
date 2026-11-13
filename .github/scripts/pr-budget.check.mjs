@@ -246,11 +246,23 @@ test("automatic and manual release review share a non-cancelling concurrency gro
   const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
   const group = review.match(/^\s+group: (.*)$/m)?.[1];
   assert.ok(group);
-  assert.match(group, /\$\{\{ github\.repository_id \}\}/);
   assert.match(group, /github\.event_name == 'workflow_dispatch'/);
   assert.match(group, /github\.event\.workflow_run\.name == 'release-please'/);
   assert.match(group, /startsWith\(github\.event\.workflow_run\.head_branch, 'release-please--branches--main--components--'\)/);
   assert.match(group, /&& 'release-please' \|\| github\.event\.workflow_run\.head_branch/);
+  const evaluate = ({ eventName, name, branch, sourceId }) =>
+    group.replace(/\$\{\{\s*(.*?)\s*\}\}/g, (_, expression) =>
+      String(new Function("github", "startsWith", `return ${expression}`)({
+        repository_id: 10, event_name: eventName,
+        event: { workflow_run: { name, head_branch: branch, head_repository: { id: sourceId } } },
+      }, (value, prefix) => value?.startsWith(prefix))));
+  const branch = "release-please--branches--main--components--calendar-calls";
+  const trusted = evaluate({ eventName: "workflow_run", name: "PR review context", branch, sourceId: 10 });
+  assert.equal(evaluate({ eventName: "workflow_run", name: "release-please", branch: "main", sourceId: 10 }), trusted);
+  assert.equal(evaluate({ eventName: "workflow_dispatch", branch: "", sourceId: undefined }), trusted);
+  assert.notEqual(evaluate({ eventName: "workflow_run", name: "PR review context", branch, sourceId: 20 }), trusted);
+  assert.notEqual(evaluate({ eventName: "workflow_run", name: "PR review context", branch: "feature", sourceId: 20 }),
+    evaluate({ eventName: "workflow_run", name: "PR review context", branch: "feature", sourceId: 10 }));
   assert.match(review, /cancel-in-progress: false/);
   assert.match(review, /Release PR already reviewed at current head SHA/);
 });

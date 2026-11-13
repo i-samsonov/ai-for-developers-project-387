@@ -20,7 +20,9 @@ name: Independent PR review
 concurrency:
   # All paths for release PRs (including their pull_request context) must
   # serialize through publish; resolve alone cannot prevent a second model run.
-  group: independent-review-${{ github.repository_id }}-${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.name == 'release-please' || startsWith(github.event.workflow_run.head_branch, 'release-please--branches--main--components--')) && 'release-please' || github.event.workflow_run.head_branch }}
+  # workflow_run groups use the *source* repository ID: a fork with the same
+  # branch name must not occupy the trusted repository's pending slot.
+  group: independent-review-${{ github.event_name == 'workflow_dispatch' && github.repository_id || github.event.workflow_run.head_repository.id }}-${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.name == 'release-please' || startsWith(github.event.workflow_run.head_branch, 'release-please--branches--main--components--')) && 'release-please' || github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:

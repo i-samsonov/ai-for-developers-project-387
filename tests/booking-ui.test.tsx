@@ -173,6 +173,27 @@ it('rejects an overlong topic in the guest form without creating a booking', asy
   } finally { await closeServer(app) }
 })
 
+it('accepts a topic of 150 emoji as 150 characters through the real API', async () => {
+  const day = today()
+  const topic = '😀'.repeat(150)
+  const app = await server(() => new Date(`${day}T09:00:00Z`))
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
+    window.location.hash = '#/booking'
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Знакомство.*Поговорим.*30 мин/ }))
+    fireEvent.click(screen.getByRole('button', { name: dateLabel(dayAt(day, 1)) }))
+    fireEvent.click(await screen.findByRole('button', { name: /09:00 - 09:30.*Свободно/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Продолжить' }))
+    fireEvent.change(screen.getByLabelText('Имя'), { target: { value: 'Гость' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'guest@example.com' } })
+    fireEvent.change(screen.getByLabelText('Тема разговора (необязательно)'), { target: { value: topic } })
+    fireEvent.click(screen.getByRole('button', { name: 'Подтвердить запись' }))
+    expect(await screen.findByRole('heading', { name: 'Бронь подтверждена. До встречи!' })).toBeTruthy()
+    expect((await app.inject('/api/admin/bookings')).json()[0].topic).toBe(topic)
+  } finally { await closeServer(app) }
+})
+
 it('lets the owner create a type and makes it available to guests through the SDK', async () => {
   const app = await server()
   try {

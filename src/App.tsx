@@ -93,7 +93,7 @@ function App() {
     if (!selected || !slot || !date) return
     const form = new FormData(event.currentTarget)
     const topic = String(form.get('topic'))
-    if (topic.length > 200) {
+    if (Array.from(topic).length > 200) {
       setError('Тема разговора не может быть длиннее 200 символов.')
       return
     }

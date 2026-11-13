@@ -44,6 +44,7 @@ describe('booking HTTP contract', () => {
     try {
       await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
       expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: 'а'.repeat(201) } })).statusCode).toBe(400)
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: '😀'.repeat(201) } })).statusCode).toBe(400)
       expect((await app.inject('/api/admin/bookings')).json()).toEqual([])
       expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: 'а'.repeat(200) } })).statusCode).toBe(200)
       const conflict = await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: 'Другая тема' } })

@@ -12,6 +12,7 @@ dist
 dist-server
 .vitest/
 dist-ssr
+audit-reports/
 *.local
 *.sqlite
 *.sqlite.tmp

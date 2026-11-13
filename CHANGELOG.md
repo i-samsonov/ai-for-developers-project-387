@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/i-samsonov/ai-for-developers-project-387/compare/v1.0.0...v1.1.0) (2026-11-13)
+
+
+### Features
+
+* show upcoming call counts by day ([7cc8d6f](https://github.com/i-samsonov/ai-for-developers-project-387/commit/7cc8d6fdc396f690ed203b72f1343585bc0033cb))
+
 ## 1.0.0 (2026-11-13)
 
 

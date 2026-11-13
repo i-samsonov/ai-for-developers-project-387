@@ -312,6 +312,38 @@ it('reminds the owner within 30 minutes while upcoming is open and removes it af
   }
 })
 
+it('shows a reminder when the upcoming list finishes loading after the 30-minute boundary', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-13T05:59:00Z'))
+  const app = await server(() => new Date('2026-11-13T05:59:00Z'))
+  let releaseResponse!: () => void
+  const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve })
+  client.setConfig({ fetch: async (input, init) => {
+    const response = await fetch(input, init)
+    if (String(input).includes('/api/admin/bookings')) await responseGate
+    return response
+  } })
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: {
+      id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30,
+    } })
+    await app.inject({ method: 'POST', url: '/api/bookings', payload: {
+      eventTypeId: 'intro', startsAt: '2026-11-13T06:30:00Z',
+      guestName: 'Гость', guestEmail: 'guest@example.com',
+    } })
+    window.location.hash = '#/upcoming'
+    render(<App />)
+    vi.setSystemTime(new Date('2026-11-13T06:01:00Z'))
+    releaseResponse()
+    expect(await screen.findByText(/Гость · guest@example.com/)).toBeTruthy()
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', expect.stringContaining('Напоминание'))
+  } finally {
+    releaseResponse()
+    vi.useRealTimers()
+    await closeServer(app)
+  }
+})
+
 it('removes the reminder immediately when the owner deletes the booking', async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-11-13T06:15:00Z'))

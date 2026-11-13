@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent, type SetStateAction } from 'react'
 import { ArrowRight, CalendarClock } from 'lucide-react'
 import { calendarApiCreateBooking, calendarApiCreateEventType, calendarApiDeleteBooking, calendarApiDeleteEventType, calendarApiGetBookingSettings, calendarApiListEventTypes, calendarApiListSlots, calendarApiListUpcomingBookings, calendarApiUpdateEventType } from './generated/sdk/sdk.gen'
 import type { BookingSettings, EventType, Slot, UpcomingBooking } from './generated/sdk/types.gen'
@@ -42,6 +42,10 @@ function App() {
   const windowStart = today()
   const windowEnd = dayAt(windowStart, (settings?.bookingWindowDays ?? 14) - 1)
   const visibleUpcoming = upcoming.filter((item) => Date.parse(item.startsAt) > currentTime)
+  const updateUpcoming = (bookings: SetStateAction<UpcomingBooking[]>) => {
+    setCurrentTime(Date.now())
+    setUpcoming(bookings)
+  }
 
   const loadTypes = async () => {
     const result = await calendarApiListEventTypes()
@@ -56,7 +60,7 @@ function App() {
   useEffect(() => {
     if (page === 'upcoming') {
       void calendarApiListUpcomingBookings().then((result) => {
-        if (result.data) setUpcoming(result.data)
+        if (result.data) updateUpcoming(result.data)
         else setError('Не удалось загрузить встречи.')
       })
     }
@@ -161,7 +165,7 @@ function App() {
         setSelected((previous) => previous?.id === editingId ? updated : previous)
         setEditingId(undefined)
         const refreshed = await calendarApiListUpcomingBookings()
-        if (refreshed.data) setUpcoming(refreshed.data)
+        if (refreshed.data) updateUpcoming(refreshed.data)
       } else setError(response.response.status === 404 ? 'Тип встречи не найден.' : 'Проверьте данные типа встречи.')
     } catch { setError('Не удалось связаться с API.') }
     finally { setLoading(false) }
@@ -188,12 +192,12 @@ function App() {
     setError('')
     try {
       const response = await calendarApiDeleteBooking({ path: { id: item.id } })
-      if (response.data) setUpcoming((previous) => previous.filter((booking) => booking.id !== item.id))
+      if (response.data) updateUpcoming((previous) => previous.filter((booking) => booking.id !== item.id))
       else {
         setError(response.response.status === 404 ? 'Запись уже удалена или началась.' : 'Не удалось удалить запись.')
         if (response.response.status === 404) {
           const refreshed = await calendarApiListUpcomingBookings()
-          if (refreshed.data) setUpcoming(refreshed.data)
+          if (refreshed.data) updateUpcoming(refreshed.data)
         }
       }
     } catch { setError('Не удалось связаться с API.') }

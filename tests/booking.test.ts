@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import initSqlJs from 'sql.js'
 import { createApp } from '../server/app.js'
 import { createClient } from '../src/generated/sdk/client/index.js'
 import { calendarApiDeleteBooking, calendarApiDeleteEventType, calendarApiGetBookingSettings, calendarApiListSlots, calendarApiUpdateEventType } from '../src/generated/sdk/sdk.gen.js'
@@ -19,6 +20,64 @@ async function server() {
 }
 
 describe('booking HTTP contract', () => {
+  it('saves a topic for its booking and keeps bookings without a topic unchanged after restart', async () => {
+    const { app, databasePath } = await server()
+    const input = { eventTypeId: 'intro', guestName: 'Гость', guestEmail: 'guest@example.com' }
+    try {
+      await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, startsAt: '2026-10-23T07:00:00Z', topic: 'План проекта' } })).json()).toEqual({ confirmed: true })
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, startsAt: '2026-10-23T08:00:00Z' } })).statusCode).toBe(200)
+      const bookings = (await app.inject('/api/admin/bookings')).json()
+      expect(bookings[0]).toMatchObject({ guestName: 'Гость', topic: 'План проекта', startsAt: '2026-10-23T07:00:00.000Z' })
+      expect(bookings[1]).not.toHaveProperty('topic')
+    } finally { await app.close() }
+    const reopened = createApp({ databasePath, now: () => new Date('2026-10-22T06:00:00Z'), logger: false })
+    try {
+      const bookings = (await reopened.inject('/api/admin/bookings')).json()
+      expect(bookings[0].topic).toBe('План проекта')
+      expect(bookings[1]).not.toHaveProperty('topic')
+    } finally { await reopened.close() }
+  })
+  it('rejects a topic longer than 200 characters and never saves one for a conflicting slot', async () => {
+    const { app } = await server()
+    const input = { eventTypeId: 'intro', startsAt: '2026-10-23T07:00:00Z', guestName: 'Гость', guestEmail: 'guest@example.com' }
+    try {
+      await app.inject({ method: 'POST', url: '/api/event-types', payload: { id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30 } })
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: 'а'.repeat(201) } })).statusCode).toBe(400)
+      expect((await app.inject('/api/admin/bookings')).json()).toEqual([])
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: 'а'.repeat(200) } })).statusCode).toBe(200)
+      const conflict = await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, topic: 'Другая тема' } })
+      expect(conflict.statusCode).toBe(409)
+      expect(conflict.json()).toEqual({ code: 'conflict', message: 'Время уже занято, выберите другой слот' })
+      expect((await app.inject('/api/admin/bookings')).json()).toHaveLength(1)
+      expect((await app.inject('/api/admin/bookings')).json()[0].topic).toBe('а'.repeat(200))
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { ...input, startsAt: '2026-10-23T08:00:00Z', topic: '   ' } })).statusCode).toBe(200)
+      expect((await app.inject('/api/admin/bookings')).json()[1]).not.toHaveProperty('topic')
+    } finally { await app.close() }
+  })
+
+  it('opens an existing database without a topic column or losing its bookings', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'calendar-legacy-test-'))
+    directories.push(dir)
+    const databasePath = join(dir, 'calendar.sqlite')
+    const SQL = await initSqlJs()
+    const legacy = new SQL.Database()
+    legacy.run(`CREATE TABLE event_types (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, durationMinutes INTEGER NOT NULL);
+      CREATE TABLE bookings (id INTEGER PRIMARY KEY, eventTypeId TEXT NOT NULL REFERENCES event_types(id), startsAt INTEGER NOT NULL, endsAt INTEGER NOT NULL, guestName TEXT NOT NULL, guestEmail TEXT NOT NULL);
+      INSERT INTO event_types VALUES ('intro', 'Знакомство', 'Поговорим', 30);
+      INSERT INTO bookings VALUES (1, 'intro', 1792738800000, 1792740600000, 'Старый гость', 'old@example.com');`)
+    writeFileSync(databasePath, Buffer.from(legacy.export()))
+    legacy.close()
+    const app = createApp({ databasePath, now: () => new Date('2026-10-22T06:00:00Z'), logger: false })
+    try {
+      const old = (await app.inject('/api/admin/bookings')).json()
+      expect(old).toHaveLength(1)
+      expect(old[0]).toMatchObject({ guestName: 'Старый гость', guestEmail: 'old@example.com' })
+      expect(old[0]).not.toHaveProperty('topic')
+      expect((await app.inject({ method: 'POST', url: '/api/bookings', payload: { eventTypeId: 'intro', startsAt: '2026-10-23T08:00:00Z', guestName: 'Новый', guestEmail: 'new@example.com', topic: 'План' } })).statusCode).toBe(200)
+      expect((await app.inject('/api/admin/bookings')).json().find((booking: { guestName: string }) => booking.guestName === 'Новый').topic).toBe('План')
+    } finally { await app.close() }
+  })
   it('generated SDK reaches a real listening API', async () => {
     const { app } = await server()
     try {

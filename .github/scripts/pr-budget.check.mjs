@@ -84,16 +84,19 @@ test("budget guard is checked out from the trusted repository branch", () => {
   assert.ok(workflow.indexOf("- name: Verify model key") < workflow.indexOf("- name: Budget admitted"));
 });
 
-test("review runs from the trusted base and only reads PR diff as data", () => {
-  const workflow = readFileSync(new URL("../workflows/opencode-review.yml", import.meta.url), "utf8");
-  assert.match(workflow, /pull_request_target:/);
-  assert.doesNotMatch(workflow, /^\s+pull_request:/m);
-  assert.ok(workflow.indexOf("- name: Install OpenCode CLI outside PR checkout") < workflow.indexOf("- uses: actions/checkout@v4"));
-  assert.match(workflow, /working-directory: \$\{\{ runner\.temp \}\}/);
-  assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
-  assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
-  assert.match(workflow, /git fetch --no-tags --depth=1 origin "\$HEAD_SHA"/);
-  assert.match(workflow, /git ls-tree "\$BASE_SHA" REVIEW\.md/);
-  assert.doesNotMatch(workflow, /cp REVIEW\.md/);
-  assert.match(workflow, /-f commit_id="\$HEAD_SHA"/);
+test("PR event has no secrets; the trusted follow-up only reads PR diff as data", () => {
+  const event = readFileSync(new URL("../workflows/opencode-review.yml", import.meta.url), "utf8");
+  const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  assert.match(event, /pull_request:/);
+  assert.doesNotMatch(event, /OPENCODE_API_KEY|actions\/checkout|pull-requests: write|workflow_run:/);
+  assert.match(review, /workflow_run:[\s\S]*?workflows: \["PR review context"\]/);
+  assert.doesNotMatch(review, /pull_request_target:|ref: \$\{\{ .*head\.sha \}\}/);
+  assert.ok(review.indexOf("- name: Install OpenCode CLI outside any checkout") < review.indexOf("- uses: actions/checkout@v4"));
+  assert.match(review, /working-directory: \$\{\{ runner\.temp \}\}/);
+  assert.match(review, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(review, /pr\.head\.sha !== run\.head_sha/);
+  assert.match(review, /git fetch --no-tags --depth=1 origin "\$BASE_SHA" "\$HEAD_SHA"/);
+  assert.match(review, /git ls-tree "\$trusted_sha" REVIEW\.md/);
+  assert.doesNotMatch(review, /cp REVIEW\.md/);
+  assert.match(review, /-f commit_id="\$HEAD_SHA"/);
 });

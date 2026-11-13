@@ -68,8 +68,28 @@ jobs:
           test -n "$OPENCODE_API_KEY"
           echo 'ready=true' >> "$GITHUB_OUTPUT"
 
+      - name: Resolve PR head after trusted budget check
+        id: pr_head
+        if: steps.budget.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.repo.full_name)" = "$GH_REPO"
+          printf 'sha=%s\n' "$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head for the agent
+        if: steps.pr_head.outputs.sha != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr_head.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Run OpenCode
-        if: steps.key.outputs.ready == 'true'
+        if: steps.key.outputs.ready == 'true' && ((github.event_name == 'issue_comment' && !github.event.issue.pull_request) || steps.pr_head.outputs.sha != '')
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}

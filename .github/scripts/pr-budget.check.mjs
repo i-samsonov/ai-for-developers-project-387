@@ -78,4 +78,14 @@ test("budget guard is checked out from the trusted repository branch", () => {
     workflow,
     /- name: Checkout repository[\s\S]*?with:\s*\n[\s\S]*?ref: \$\{\{ github\.event\.repository\.default_branch \}\}/,
   );
+  assert.ok(workflow.indexOf("- name: Budget admitted") < workflow.indexOf("- name: Checkout PR head for the agent"));
+  assert.ok(workflow.indexOf("- name: Checkout PR head for the agent") < workflow.indexOf("- name: Run OpenCode"));
+  assert.match(workflow, /- name: Checkout PR head for the agent[\s\S]*?ref: \$\{\{ steps\.pr_head\.outputs\.sha \}\}/);
+});
+
+test("review CLI is installed outside the PR before checkout", () => {
+  const workflow = readFileSync(new URL("../workflows/opencode-review.yml", import.meta.url), "utf8");
+  assert.ok(workflow.indexOf("- name: Install OpenCode CLI outside PR checkout") < workflow.indexOf("- uses: actions/checkout@v4"));
+  assert.match(workflow, /working-directory: \$\{\{ runner\.temp \}\}/);
+  assert.match(workflow, /-f commit_id="\$HEAD_SHA"/);
 });

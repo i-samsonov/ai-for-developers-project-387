@@ -73,7 +73,7 @@ jobs:
           printf 'HEAD_SHA=%s\nBASE_SHA=%s\n' "$HEAD_SHA" "$BASE_SHA" > "$RUNNER_TEMP/review/shas.txt"
 
       - name: Install OpenCode CLI
-        run: npm install --global @opencode/cli
+        run: npm install --global @opencode/cli@2.3.0
 
       - name: Independent review (no GitHub write token)
         env:

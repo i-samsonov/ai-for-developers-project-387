@@ -197,6 +197,10 @@ test("normal PR context still requires the event head SHA", async () => {
     { number: "11", head_sha: "new-sha", base_sha: "main-sha" });
   assert.deepEqual(await resolveReview({ run: { ...run, head_sha: "new-sha" }, candidates: [current], currentMain: "main-sha",
     reviews: [{ commit_id: "new-sha", user: { login: "github-actions[bot]" } }] }), {});
+  const foreign = { ...run, name: "release-please", head_sha: "new-sha" };
+  assert.deepEqual(await resolveReview({ run: foreign, candidates: [current], currentMain: "main-sha" }), {});
+  const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  assert.match(review, /github\.event\.workflow_run\.name == 'PR review context' &&\s*github\.event\.workflow_run\.event == 'pull_request'/);
 });
 
 test("release context with no pull_requests is linked by commit association for both trigger paths", async () => {

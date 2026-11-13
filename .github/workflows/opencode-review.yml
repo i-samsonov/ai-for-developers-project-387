@@ -20,4 +20,5 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: printf 'PR #%s head %s\n' "$PR_NUMBER" "$HEAD_SHA"
+        run: |
+          printf 'PR #%s head %s\n' "$PR_NUMBER" "$HEAD_SHA"

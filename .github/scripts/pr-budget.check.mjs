@@ -88,6 +88,7 @@ test("PR event has no secrets; the trusted follow-up only reads PR diff as data"
   const event = readFileSync(new URL("../workflows/opencode-review.yml", import.meta.url), "utf8");
   const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
   assert.match(event, /pull_request:/);
+  assert.match(event, /run: \|\n\s+printf 'PR #%s head %s\\n' "\$PR_NUMBER" "\$HEAD_SHA"/);
   assert.doesNotMatch(event, /OPENCODE_API_KEY|actions\/checkout|pull-requests: write|workflow_run:/);
   assert.match(review, /workflow_run:[\s\S]*?workflows: \["PR review context"\]/);
   assert.doesNotMatch(review, /pull_request_target:|ref: \$\{\{ .*head\.sha \}\}/);

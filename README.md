@@ -70,6 +70,16 @@ docker run --rm -e PORT=8080 -p 8080:8080 calendar-calls
 
 Проверки запускаются также в GitHub Actions (`.github/workflows/ci.yml`). Файл `.github/workflows/hexlet-check.yml` отвечает за отдельные проверки Хекслета.
 
+## Агент в GitHub
+
+В комментарии к issue или PR можно упомянуть **`/oc`** или **`/opencode`** — запустится [OpenCode GitHub Action](https://opencode.ai/docs/github/) (`.github/workflows/opencode.yml`). Пример:
+
+```text
+/oc explain this issue
+```
+
+Запускать агента могут только пользователи с правом записи в репозиторий; комментарии ботов игнорируются. Модель — `opencode/big-pickle`, ключ берётся из секрета Actions **`OPENCODE_API_KEY`** (OpenCode Console). Сессии не публикуются (`share: "false"`): доступны только прогон Actions и ответ в issue. Секрет **`HEXLET_ID`** относится к проверкам Хекслета и не связан с агентом.
+
 ## Релизы
 
 Используйте [Conventional Commits](https://www.conventionalcommits.org/): `feat: ...`, `fix: ...`, `chore: ...`; для несовместимых изменений — `feat!: ...`. Workflow `.github/workflows/release-please.yml` на ветке `main` поддерживает release-PR, changelog и версии. В настройках репозитория GitHub включите **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**. Для запуска CI на автоматически созданных release-PR добавьте секрет `RELEASE_PLEASE_TOKEN` (fine-grained PAT с доступом к Contents и Pull requests); без него action использует `GITHUB_TOKEN`, но созданные им PR сами не запустят другие workflow.

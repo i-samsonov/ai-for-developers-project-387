@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from '../src/App'
 import { createApp } from '../server/app.js'
 import { client } from '../src/generated/sdk/client.gen.js'
@@ -234,4 +234,45 @@ it('shows an empty upcoming list, then the owner sees contacts from all types in
     expect(first.parentElement?.textContent).toMatch(/Знакомство \(intro\).*10:00.*30 мин/)
     expect(second.parentElement?.textContent).toMatch(/Обсуждение \(review\).*11:00.*30 мин/)
   } finally { await closeServer(app) }
+})
+
+it('shows the number of upcoming calls per Moscow date and updates it after deletion', async () => {
+  const day = today()
+  const firstDay = dayAt(day, 1)
+  const secondDay = dayAt(day, 2)
+  const app = await server(() => new Date(`${day}T09:00:00Z`))
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  try {
+    for (const id of ['intro', 'review']) {
+      await app.inject({ method: 'POST', url: '/api/event-types', payload: {
+        id, name: id, description: 'Поговорим', durationMinutes: 30,
+      } })
+    }
+    for (const [startsAt, guestName, eventTypeId] of [
+      [`${firstDay}T07:00:00Z`, 'Первый', 'intro'],
+      [`${firstDay}T08:00:00Z`, 'Второй', 'review'],
+      [`${secondDay}T07:00:00Z`, 'Третий', 'intro'],
+    ]) {
+      await app.inject({ method: 'POST', url: '/api/bookings', payload: {
+        eventTypeId, startsAt, guestName, guestEmail: 'guest@example.com',
+      } })
+    }
+    window.location.hash = '#/upcoming'
+    render(<App />)
+    const first = (await screen.findByRole('heading', { name: dateLabel(firstDay) })).closest('section')!
+    const second = screen.getByRole('heading', { name: dateLabel(secondDay) }).closest('section')!
+    expect(within(first).getByText('Звонков: 2')).toBeTruthy()
+    expect(within(second).getByText('Звонков: 1')).toBeTruthy()
+    expect(within(first).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(second).getAllByRole('listitem')).toHaveLength(1)
+    fireEvent.click(within(first).getAllByRole('button', { name: 'Удалить запись' })[0])
+    await waitFor(() => expect(within(first).getByText('Звонков: 1')).toBeTruthy())
+    expect(within(first).getAllByRole('listitem')).toHaveLength(1)
+    expect(within(second).getByText('Звонков: 1')).toBeTruthy()
+    fireEvent.click(within(second).getByRole('button', { name: 'Удалить запись' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: dateLabel(secondDay) })).toBeNull())
+  } finally {
+    confirm.mockRestore()
+    await closeServer(app)
+  }
 })

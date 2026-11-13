@@ -80,7 +80,7 @@ docker run --rm -e PORT=8080 -p 8080:8080 calendar-calls
 
 Запускать агента могут только авторы с ролью `OWNER`, `MEMBER` или `COLLABORATOR`; комментарии остальных и ботов игнорируются. Модель — `opencode/big-pickle`, ключ берётся из секрета Actions **`OPENCODE_API_KEY`** (OpenCode Console). Сессии не публикуются (`share: "false"`): доступны только прогон Actions и ответ в issue. Секрет **`HEXLET_ID`** относится к проверкам Хекслета и не связан с агентом.
 
-Workflow работает через встроенный `GITHUB_TOKEN` (`use_github_token: true`), а не через обмен токена OpenCode App: сервис обмена отвечал `502` для этого репозитория. Поэтому права выданы самому workflow, а запуск ограничен проверкой автора комментария выше.
+Workflow аутентифицируется через [OpenCode GitHub App](https://github.com/apps/opencode-agent): OIDC-токен обменивается на установочный токен App, поэтому права на комментарии и PR выдаёт само приложение, а у workflow остаётся `contents: read`.
 
 ## Релизы
 

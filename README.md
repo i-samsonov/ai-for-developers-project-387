@@ -82,6 +82,14 @@ docker run --rm -e PORT=8080 -p 8080:8080 calendar-calls
 
 Workflow аутентифицируется через [OpenCode GitHub App](https://github.com/apps/opencode-agent): OIDC-токен обменивается на установочный токен App, поэтому права на комментарии и PR выдаёт само приложение, а у workflow остаётся `contents: read`.
 
+### Автотриаж входящих обращений
+
+`.github/workflows/opencode-triage.yml` запускает предварительный разбор **при создании issue** без команды `/oc`. Запуск доступен только для обращений от владельца репозитория и авторов с ролью `OWNER`, `MEMBER` или `COLLABORATOR`; обращения остальных авторов не отправляются модели. Тикеты и спецификации с меткой `ready-for-agent` (а также `ready-for-human` и `wontfix`) пропускаются. Подготовленные тикеты создавайте сразу с меткой `ready-for-agent`, иначе событие открытия запустит их разбор.
+
+Инструкция агенту находится в `prompt` workflow: он сверяет обращение с текущим приложением, оставляет вопросы при нехватке данных и рекомендует следующий шаг, но не меняет код и не начинает реализацию. Для меток используются правила из `docs/agents/triage-labels.md`; вопросы переводят обращение в `needs-info`. Триаж ограничен десятью минутами, а запуски по одному issue выполняются последовательно с ручным `/oc`.
+
+Автотриаж использует встроенный `GITHUB_TOKEN` с правами `contents: read` и `issues: write`, чтобы агент мог прочитать репозиторий и оставить комментарий или метку. Ручной `/oc` по-прежнему использует GitHub App. Ответы на вопросы и согласование спецификации и тикетов остаются за человеком; создание issue с меткой `ready-for-agent` само по себе не запускает реализацию.
+
 ## Релизы
 
 Используйте [Conventional Commits](https://www.conventionalcommits.org/): `feat: ...`, `fix: ...`, `chore: ...`; для несовместимых изменений — `feat!: ...`. Workflow `.github/workflows/release-please.yml` на ветке `main` поддерживает release-PR, changelog и версии. В настройках репозитория GitHub включите **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**. Для запуска CI на автоматически созданных release-PR добавьте секрет `RELEASE_PLEASE_TOKEN` (fine-grained PAT с доступом к Contents и Pull requests); без него action использует `GITHUB_TOKEN`, но созданные им PR сами не запустят другие workflow.

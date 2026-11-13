@@ -1,0 +1,24 @@
+name: PR review context
+run-name: review-context-PR-${{ github.event.pull_request.number }}
+
+"on":
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+# This workflow runs from the PR merge ref. It must never receive the model
+# secret or a write token, or execute code from the PR.
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record PR event (no checkout or secrets)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'PR #%s head %s\n' "$PR_NUMBER" "$HEAD_SHA"

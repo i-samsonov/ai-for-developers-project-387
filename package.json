@@ -12,7 +12,7 @@
     "lint": "oxlint --deny-warnings",
     "preview": "vite preview",
     "start:api": "node dist-server/index.js",
-    "test": "vitest run"
+    "test": "vitest run && node --test .github/scripts/pr-budget.check.mjs"
   },
   "dependencies": {
     "@fastify/static": "^10.1.7",

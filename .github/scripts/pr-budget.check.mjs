@@ -71,3 +71,11 @@ test("one PR budget includes both comment channels and re-runs, but not rejected
 test("fork PR is rejected before consulting the history", async () => {
   assert.match(await check({ runs: [], jobs: {}, prRepo: "other/repo" }), /reason=untrusted_pr/);
 });
+
+test("budget guard is checked out from the trusted repository branch", () => {
+  const workflow = readFileSync(new URL("../workflows/opencode.yml", import.meta.url), "utf8");
+  assert.match(
+    workflow,
+    /- name: Checkout repository[\s\S]*?with:\s*\n[\s\S]*?ref: \$\{\{ github\.event\.repository\.default_branch \}\}/,
+  );
+});

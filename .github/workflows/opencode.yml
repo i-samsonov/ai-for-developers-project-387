@@ -1,4 +1,5 @@
 name: opencode
+run-name: "opencode ${{ github.event.issue.pull_request && format('PR-{0}', github.event.issue.number) || github.event.pull_request && format('PR-{0}', github.event.pull_request.number) || format('issue-{0}', github.event.issue.number) }}"
 
 "on":
   issue_comment:
@@ -24,9 +25,15 @@ jobs:
        startsWith(github.event.comment.body, '/opencode'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      budget_reason: ${{ steps.budget.outputs.reason }}
+      admitted: ${{ steps.budget.outputs.allowed }}
+      key_ready: ${{ steps.key.outputs.ready }}
     permissions:
       id-token: write
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -34,10 +41,73 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Check PR budget
+        id: budget
+        if: github.event.issue.pull_request || github.event_name == 'pull_request_review_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: node .github/scripts/pr-budget.mjs
+
+      # Only this successful step marks an attempt as spent. Denied requests
+      # never consume another attempt; re-runs are checked again from history.
+      - name: Budget admitted
+        if: steps.budget.outputs.allowed == 'true'
+        run: echo 'PR request admitted before model invocation'
+
+      - name: Verify model key
+        id: key
+        if: github.event_name == 'issue_comment' && !github.event.issue.pull_request || steps.budget.outputs.allowed == 'true'
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          test -n "$OPENCODE_API_KEY"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
       - name: Run OpenCode
+        if: steps.key.outputs.ready == 'true'
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
           model: opencode/big-pickle
           share: "false"
+
+  report:
+    needs: opencode
+    if: |
+      always() &&
+      (github.event.issue.pull_request || github.event_name == 'pull_request_review_comment') &&
+      (needs.opencode.outputs.budget_reason == 'limit_exhausted' || needs.opencode.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Publish failure without calling the model
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          BUDGET_REASON: ${{ needs.opencode.outputs.budget_reason }}
+          ADMITTED: ${{ needs.opencode.outputs.admitted }}
+          KEY_READY: ${{ needs.opencode.outputs.key_ready }}
+        run: |
+          set -euo pipefail
+          reason="$BUDGET_REASON"
+          if [ "$reason" != limit_exhausted ]; then
+            if [ "$ADMITTED" != true ] || [ "$KEY_READY" != true ]; then
+              reason=infra
+            else
+              reason=agent_failed
+              if gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --jq '.jobs[].conclusion' | grep -qx timed_out; then
+                reason=timeout
+              fi
+            fi
+          fi
+          sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
+          printf 'Нужен человек: `%s`. Последний head SHA: `%s`. Логи: https://github.com/%s/actions/runs/%s/attempts/%s\n' \
+            "$reason" "$sha" "$GH_REPO" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/agent-result.txt"
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/agent-result.txt"

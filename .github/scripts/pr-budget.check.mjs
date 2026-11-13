@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -176,7 +176,7 @@ test("release-please resolves only a current same-repo bot PR and skips previous
   assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, user: { login: "stranger" } }], currentMain: main }), {});
   assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, head: { ...release.head, ref: "feat/not-a-release" } }], currentMain: main }), {});
   assert.deepEqual(await resolveReview({ run, candidates: [{ ...release, base: { ref: "main", sha: "old-main" } }], currentMain: main }), {});
-  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: main, reviews: [{ commit_id: "release-sha", user: { login: "github-actions[bot]" } }] }), {});
+  assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: main, reviews: [{ commit_id: "release-sha", state: "COMMENTED", user: { login: "github-actions[bot]" } }] }), {});
   assert.deepEqual(await resolveReview({ run, candidates: [release], currentMain: main, contexts: [] }), {});
   assert.deepEqual(await resolveReview({ run: undefined, candidates: [release], currentMain: main,
     manualInputs: { pr_number: "1", context_run_id: "42" } }), {
@@ -196,7 +196,7 @@ test("normal PR context still requires the event head SHA", async () => {
   assert.deepEqual(await resolveReview({ run: { ...run, head_sha: "new-sha" }, candidates: [current], currentMain: "main-sha" }),
     { number: "11", head_sha: "new-sha", base_sha: "main-sha" });
   assert.deepEqual(await resolveReview({ run: { ...run, head_sha: "new-sha" }, candidates: [current], currentMain: "main-sha",
-    reviews: [{ commit_id: "new-sha", user: { login: "github-actions[bot]" } }] }), {});
+    reviews: [{ commit_id: "new-sha", state: "COMMENTED", user: { login: "github-actions[bot]" } }] }), {});
   const foreign = { ...run, name: "release-please", head_sha: "new-sha" };
   assert.deepEqual(await resolveReview({ run: foreign, candidates: [current], currentMain: "main-sha" }), {});
   const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
@@ -221,6 +221,21 @@ test("release context with no pull_requests is linked by commit association for 
     contexts, associated: [{ number: 2 }] }), {});
 });
 
+test("resolve tolerates deleted reviewers and only considers published reviews", async () => {
+  const pr = { number: 11, state: "open", user: { login: "owner" },
+    author_association: "OWNER", base: { ref: "main", sha: "main-sha" },
+    head: { sha: "new-sha", repo: { full_name: "owner/repo" } } };
+  const run = { name: "PR review context", event: "pull_request",
+    head_sha: "new-sha", pull_requests: [{ number: 11 }] };
+  const expected = { number: "11", head_sha: "new-sha", base_sha: "main-sha" };
+  const stale = [{ commit_id: "new-sha", state: "COMMENTED", user: null },
+    { commit_id: "new-sha", state: "PENDING", user: { login: "github-actions[bot]" } },
+    { commit_id: "new-sha", state: "DISMISSED", user: { login: "github-actions[bot]" } }];
+  assert.deepEqual(await resolveReview({ run, candidates: [pr], currentMain: "main-sha", reviews: stale }), expected);
+  assert.deepEqual(await resolveReview({ run, candidates: [pr], currentMain: "main-sha",
+    reviews: [...stale, { commit_id: "new-sha", state: "APPROVED", user: { login: "github-actions[bot]" } }] }), {});
+});
+
 test("release completion includes every eligible PR instead of stopping at the first", async () => {
   const makeRelease = (number) => ({
     number, state: "open", user: { login: "github-actions[bot]" }, author_association: "NONE",
@@ -235,7 +250,7 @@ test("release completion includes every eligible PR instead of stopping at the f
     { number: "2", head_sha: "release-2", base_sha: "main-sha" },
   ]);
   assert.deepEqual(await resolveReview({ run, candidates: releases, currentMain: "main-sha",
-    reviews: [{ commit_id: "release-1", user: { login: "github-actions[bot]" } }] }), [
+    reviews: [{ commit_id: "release-1", state: "COMMENTED", user: { login: "github-actions[bot]" } }] }), [
     { number: "2", head_sha: "release-2", base_sha: "main-sha" },
   ]);
   const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
@@ -271,7 +286,7 @@ test("automatic and manual release review share a non-cancelling concurrency gro
   assert.match(review, /Release PR already reviewed at current head SHA/);
 });
 
-test("publish skips a matching review beyond the first page", () => {
+test("publish filters paginated reviews by SHA, author and state", () => {
   const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
   const publish = workflow.slice(workflow.indexOf("      - name: Publish review bound to the checked SHA"));
   const body = publish.slice(publish.indexOf("        run: |\n") + "        run: |\n".length)
@@ -280,27 +295,42 @@ test("publish skips a matching review beyond the first page", () => {
     gh() {
       if [[ "$1" == pr ]]; then printf '%s\\n' "$HEAD_SHA"
       elif [[ "$1" == api && "$2" == --paginate ]]; then
-        for ((i=0;i<10000;i++)); do printf '%s\\n' 101; done
+        printf '%s\\n' "$REVIEWS_JSON" | jq -r "\${@: -1}"
       elif [[ "$1" == api && "$2" == --method ]]; then echo posted > "$RUNNER_TEMP/posted"
       fi
     }
   `;
-  const folder = mkdtempSync(join(tmpdir(), "review-publish-"));
-  try {
-    // The mock's matching review exists only on page two, returned by --paginate.
-    const result = spawnSync("bash", ["-c", `${mock}\n${body}`], {
-      env: { ...process.env, HEAD_SHA: "release-sha", PR_NUMBER: "1",
-        GH_REPO: "owner/repo", RUNNER_TEMP: folder }, encoding: "utf8",
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Current head SHA has already been reviewed/);
-    assert.throws(() => readFileSync(join(folder, "posted")));
-  } finally {
-    rmSync(folder, { recursive: true, force: true });
-  }
+  const bot = { login: "github-actions[bot]" };
+  const page = Array.from({ length: 100 }, (_, i) => ({
+    id: i, commit_id: "release-sha", state: "DISMISSED", user: i === 0 ? null : bot,
+  }));
+  const check = (secondPage, shouldPost) => {
+    const folder = mkdtempSync(join(tmpdir(), "review-publish-"));
+    try {
+      mkdirSync(join(folder, "review"));
+      writeFileSync(join(folder, "review", "review.md"), "review");
+      const result = spawnSync("bash", ["-c", `${mock}\n${body}`], {
+        env: { ...process.env, HEAD_SHA: "release-sha", PR_NUMBER: "1",
+          GH_REPO: "owner/repo", RUNNER_TEMP: folder,
+          REVIEWS_JSON: `${JSON.stringify(page)}\n${JSON.stringify(secondPage)}` }, encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      if (shouldPost) assert.equal(readFileSync(join(folder, "posted"), "utf8").trim(), "posted");
+      else {
+        assert.match(result.stdout, /Current head SHA has already been reviewed/);
+        assert.throws(() => readFileSync(join(folder, "posted")));
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  };
+  check([{ id: 101, commit_id: "release-sha", state: "COMMENTED", user: bot }], false);
+  check([{ id: 101, commit_id: "other-sha", state: "COMMENTED", user: bot },
+    { id: 102, commit_id: "release-sha", state: "PENDING", user: bot }], true);
 });
 
 test("README describes queued rather than cancelled release review runs", () => {
   const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
   assert.doesNotMatch(readme, /новое событие для той же ветки PR отменяет устаревший запуск/);
+  assert.match(readme, /новое событие для той же ветки PR не отменяет уже выполняющийся запуск, а ожидает завершения/);
 });

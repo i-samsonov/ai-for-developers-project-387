@@ -144,7 +144,8 @@ jobs:
                 owner, repo, pull_number: pr.number, per_page: 100,
               })
               if (reviews.some((review) => review.commit_id === pr.head.sha &&
-                  review.user.login === "github-actions[bot]")) {
+                  review.user?.login === "github-actions[bot]" &&
+                  ["COMMENTED", "APPROVED"].includes(review.state))) {
                 core.info("Release PR already reviewed at current head SHA")
                 continue
               }
@@ -279,7 +280,7 @@ jobs:
           set -euo pipefail
           test "$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA" || exit 0
           reviews="$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-            --jq ".[] | select(.commit_id == \"$HEAD_SHA\" and .user.login == \"github-actions[bot]\") | .id")"
+            --jq ".[] | select(.commit_id == \"$HEAD_SHA\" and .user.login == \"github-actions[bot]\" and (.state == \"COMMENTED\" or .state == \"APPROVED\")) | .id")"
           if [[ -n "$reviews" ]]; then
             echo "Current head SHA has already been reviewed"
             exit 0

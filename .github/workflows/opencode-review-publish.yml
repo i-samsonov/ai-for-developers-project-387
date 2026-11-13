@@ -41,9 +41,7 @@ jobs:
       contents: read
       actions: read
     outputs:
-      number: ${{ steps.pr.outputs.number }}
-      head_sha: ${{ steps.pr.outputs.head_sha }}
-      base_sha: ${{ steps.pr.outputs.base_sha }}
+      prs: ${{ steps.pr.outputs.prs }}
     steps:
       - name: Resolve trusted PR and reject stale runs
         id: pr
@@ -56,13 +54,16 @@ jobs:
             const manual = context.eventName === "workflow_dispatch"
             const releaseRun = manual || (run.name === "release-please" &&
               run.event === "push" && run.head_branch === "main")
+            const selected = []
             let candidates
             let mainSha
             if (releaseRun) {
               // The bot's PR may start the unprivileged pull_request job but
               // GitHub need not produce its downstream workflow_run event.
               // Only a successful, current release-please run from main can
-              // select a release PR. Never trust a PR artifact or checkout.
+              // consider release PRs. A run can update multiple components,
+              // so review every eligible PR rather than guessing the first.
+              // Never trust a PR artifact or checkout.
               const { data: main } = await github.rest.repos.getBranch({
                 owner, repo, branch: "main",
               })
@@ -140,16 +141,21 @@ jobs:
                 core.info("Release PR already reviewed at current head SHA")
                 continue
               }
-              core.setOutput("number", String(pr.number))
-              core.setOutput("head_sha", pr.head.sha)
-              core.setOutput("base_sha", pr.base.sha)
-              return
+              selected.push({
+                number: String(pr.number), head_sha: pr.head.sha, base_sha: pr.base.sha,
+              })
+              if (manual || !releaseRun) break
             }
-            core.info("No current trusted same-repo PR for this workflow run")
+            if (selected.length) core.setOutput("prs", JSON.stringify(selected))
+            else core.info("No current trusted same-repo PR for this workflow run")
 
   review:
     needs: resolve
-    if: needs.resolve.outputs.number != ''
+    if: needs.resolve.outputs.prs != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.prs) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -176,9 +182,9 @@ jobs:
       - name: Prepare read-only review context
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
-          PR_NUMBER: ${{ needs.resolve.outputs.number }}
+          BASE_SHA: ${{ matrix.base_sha }}
+          HEAD_SHA: ${{ matrix.head_sha }}
+          PR_NUMBER: ${{ matrix.number }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/review"
@@ -232,7 +238,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: independent-review-${{ needs.resolve.outputs.number }}-${{ needs.resolve.outputs.head_sha }}
+          name: independent-review-${{ matrix.number }}-${{ matrix.head_sha }}
           path: |
             ${{ runner.temp }}/review/review.md
             ${{ runner.temp }}/review/shas.txt
@@ -240,6 +246,12 @@ jobs:
 
   publish:
     needs: [resolve, review]
+    # Publish completed reviews even if another PR's model job failed.
+    if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.prs != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.prs) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -247,20 +259,21 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: independent-review-${{ needs.resolve.outputs.number }}-${{ needs.resolve.outputs.head_sha }}
+          name: independent-review-${{ matrix.number }}-${{ matrix.head_sha }}
           path: ${{ runner.temp }}/review
 
       - name: Publish review bound to the checked SHA
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ needs.resolve.outputs.number }}
-          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          PR_NUMBER: ${{ matrix.number }}
+          HEAD_SHA: ${{ matrix.head_sha }}
         run: |
           set -euo pipefail
           test "$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA" || exit 0
-          if gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-            --jq ".[] | select(.commit_id == \"$HEAD_SHA\" and .user.login == \"github-actions[bot]\") | .id" | grep -q .; then
+          reviews="$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+            --jq ".[] | select(.commit_id == \"$HEAD_SHA\" and .user.login == \"github-actions[bot]\") | .id")"
+          if [[ -n "$reviews" ]]; then
             echo "Current head SHA has already been reviewed"
             exit 0
           fi

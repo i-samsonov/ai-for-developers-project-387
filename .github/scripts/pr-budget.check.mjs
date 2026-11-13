@@ -143,11 +143,11 @@ async function resolveReview({ run, candidates, currentMain, reviews = [], conte
       },
       actions: { listWorkflowRunsForWorkflow: () => {} },
     },
-    paginate: async (method) => method === github.rest.repos.listPullRequestsAssociatedWithCommit ? associated
+    paginate: async (method, params) => method === github.rest.repos.listPullRequestsAssociatedWithCommit ? associated
       : method === github.rest.pulls.list ? candidates
       : method === github.rest.actions.listWorkflowRunsForWorkflow ? (contexts ?? [{
-        id: 42, conclusion: "success", head_sha: candidates[0].head.sha,
-        head_repository: { full_name: "owner/repo" }, pull_requests: [{ number: candidates[0].number }],
+        id: 42, conclusion: "success", head_sha: params.head_sha,
+        head_repository: { full_name: "owner/repo" }, pull_requests: [],
       }]) : reviews,
   };
   const context = { eventName: manualInputs ? "workflow_dispatch" : "workflow_run",
@@ -155,7 +155,8 @@ async function resolveReview({ run, candidates, currentMain, reviews = [], conte
   const core = { setOutput: (key, value) => { outputs[key] = value; }, info: () => {} };
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   await new AsyncFunction("github", "context", "core", source)(github, context, core);
-  return outputs;
+  if (manualInputs?.all || run?.all) return outputs.prs ? JSON.parse(outputs.prs) : [];
+  return outputs.prs ? JSON.parse(outputs.prs)[0] : {};
 }
 
 test("release-please resolves only a current same-repo bot PR and skips previously reviewed heads", async () => {
@@ -216,6 +217,31 @@ test("release context with no pull_requests is linked by commit association for 
     contexts, associated: [{ number: 2 }] }), {});
 });
 
+test("release completion includes every eligible PR instead of stopping at the first", async () => {
+  const makeRelease = (number) => ({
+    number, state: "open", user: { login: "github-actions[bot]" }, author_association: "NONE",
+    base: { ref: "main", sha: "main-sha" },
+    head: { sha: `release-${number}`, ref: `release-please--branches--main--components--component-${number}`,
+      repo: { full_name: "owner/repo" } },
+  });
+  const releases = [makeRelease(1), makeRelease(2)];
+  const run = { name: "release-please", event: "push", head_branch: "main", head_sha: "main-sha", all: true };
+  assert.deepEqual(await resolveReview({ run, candidates: releases, currentMain: "main-sha" }), [
+    { number: "1", head_sha: "release-1", base_sha: "main-sha" },
+    { number: "2", head_sha: "release-2", base_sha: "main-sha" },
+  ]);
+  assert.deepEqual(await resolveReview({ run, candidates: releases, currentMain: "main-sha",
+    reviews: [{ commit_id: "release-1", user: { login: "github-actions[bot]" } }] }), [
+    { number: "2", head_sha: "release-2", base_sha: "main-sha" },
+  ]);
+  const workflow = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
+  assert.equal(workflow.match(/include: \$\{\{ fromJSON\(needs\.resolve\.outputs\.prs\) \}\}/g)?.length, 2);
+  assert.match(workflow, /if: always\(\) && needs\.resolve\.result == 'success' && needs\.resolve\.outputs\.prs != ''/);
+  assert.match(workflow, /name: independent-review-\$\{\{ matrix\.number \}\}-\$\{\{ matrix\.head_sha \}\}/);
+  assert.match(workflow, /PR_NUMBER: \$\{\{ matrix\.number \}\}/);
+  assert.match(workflow, /HEAD_SHA: \$\{\{ matrix\.head_sha \}\}/);
+});
+
 test("automatic and manual release review share a non-cancelling concurrency group", () => {
   const review = readFileSync(new URL("../workflows/opencode-review-publish.yml", import.meta.url), "utf8");
   const group = review.match(/^\s+group: (.*)$/m)?.[1];
@@ -237,7 +263,8 @@ test("publish skips a matching review beyond the first page", () => {
   const mock = `
     gh() {
       if [[ "$1" == pr ]]; then printf '%s\\n' "$HEAD_SHA"
-      elif [[ "$1" == api && "$2" == --paginate ]]; then printf '%s\\n' 101
+      elif [[ "$1" == api && "$2" == --paginate ]]; then
+        for ((i=0;i<10000;i++)); do printf '%s\\n' 101; done
       elif [[ "$1" == api && "$2" == --method ]]; then echo posted > "$RUNNER_TEMP/posted"
       fi
     }
@@ -255,4 +282,9 @@ test("publish skips a matching review beyond the first page", () => {
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
+});
+
+test("README describes queued rather than cancelled release review runs", () => {
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  assert.doesNotMatch(readme, /новое событие для той же ветки PR отменяет устаревший запуск/);
 });

@@ -4,6 +4,7 @@ import { calendarApiCreateBooking, calendarApiCreateEventType, calendarApiDelete
 import type { BookingSettings, EventType, Slot, UpcomingBooking } from './generated/sdk/types.gen'
 import { calendarDays, dayAt, monthAt } from './booking-calendar'
 import { groupUpcomingByDay } from './upcoming-bookings'
+import { isReminderDue, nextReminderChange } from './upcoming-reminders'
 
 const time = (value: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const dateTime = (value: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
@@ -32,6 +33,7 @@ function App() {
   const [slot, setSlot] = useState<Slot>()
   const [confirmed, setConfirmed] = useState(false)
   const [upcoming, setUpcoming] = useState<UpcomingBooking[]>([])
+  const [currentTime, setCurrentTime] = useState(() => Date.now())
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [editingId, setEditingId] = useState<string>()
@@ -39,6 +41,7 @@ function App() {
   const [slotsLoading, setSlotsLoading] = useState(false)
   const windowStart = today()
   const windowEnd = dayAt(windowStart, (settings?.bookingWindowDays ?? 14) - 1)
+  const visibleUpcoming = upcoming.filter((item) => Date.parse(item.startsAt) > currentTime)
 
   const loadTypes = async () => {
     const result = await calendarApiListEventTypes()
@@ -70,6 +73,24 @@ function App() {
       })
     }
   }, [page])
+  useEffect(() => {
+    if (page !== 'upcoming') return
+    const refreshTime = () => setCurrentTime(Date.now())
+    refreshTime()
+    window.addEventListener('focus', refreshTime)
+    document.addEventListener('visibilitychange', refreshTime)
+    return () => {
+      window.removeEventListener('focus', refreshTime)
+      document.removeEventListener('visibilitychange', refreshTime)
+    }
+  }, [page])
+  useEffect(() => {
+    if (page !== 'upcoming') return
+    const next = nextReminderChange(upcoming, Date.now())
+    if (next === undefined) return
+    const timer = window.setTimeout(() => setCurrentTime(Date.now()), Math.max(1, next - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [page, upcoming, currentTime])
   useEffect(() => {
     if (!selected || !date) return
     let active = true
@@ -248,12 +269,12 @@ function App() {
               </div>}
             </section>}
       </> : <section className="space-y-8"><p className="rounded bg-amber-100 p-3">Учебное локальное приложение: список и контакты гостей доступны без авторизации. Не используйте реальные персональные данные при публичном размещении.</p>
-        <div><h1 className="text-2xl font-bold">Предстоящие события</h1>{upcoming.length ? <div className="mt-4 space-y-6">{groupUpcomingByDay(upcoming).map(({ day, items }) => <section key={day} aria-labelledby={`upcoming-${day}`}>
+        <div><h1 className="text-2xl font-bold">Предстоящие события</h1>{visibleUpcoming.length ? <div className="mt-4 space-y-6">{groupUpcomingByDay(visibleUpcoming).map(({ day, items }) => <section key={day} aria-labelledby={`upcoming-${day}`}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 id={`upcoming-${day}`} className="text-lg font-semibold">{dateLabel(day)}</h2>
             <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-medium text-orange-800">Звонков: {items.length}</span>
           </div>
-          <ul className="space-y-3">{items.map((item) => <li className="flex flex-wrap items-center justify-between gap-3 rounded border bg-white p-4" key={item.id}><div><strong>{item.eventType.name}</strong> ({item.eventType.id}) · {dateTime(item.startsAt)} · {item.eventType.durationMinutes} мин.<br />{item.guestName} · {item.guestEmail}{item.topic && <p>Тема разговора: {item.topic}</p>}</div><button type="button" disabled={deletingBookingId !== undefined} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50" onClick={() => void deleteBooking(item)}>{deletingBookingId === item.id ? 'Удаляем…' : 'Удалить запись'}</button></li>)}</ul>
+          <ul className="space-y-3">{items.map((item) => <li className="flex flex-wrap items-center justify-between gap-3 rounded border bg-white p-4" key={item.id}><div><strong>{item.eventType.name}</strong> ({item.eventType.id}) · {dateTime(item.startsAt)} · {item.eventType.durationMinutes} мин.<br />{item.guestName} · {item.guestEmail}{item.topic && <p>Тема разговора: {item.topic}</p>}{isReminderDue(item, currentTime) && <p role="status" className="mt-2 rounded-lg bg-amber-100 px-3 py-2 font-medium text-amber-900">Напоминание: звонок начнётся в {time(item.startsAt)} (Europe/Moscow).</p>}</div><button type="button" disabled={deletingBookingId !== undefined} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50" onClick={() => void deleteBooking(item)}>{deletingBookingId === item.id ? 'Удаляем…' : 'Удалить запись'}</button></li>)}</ul>
         </section>)}</div> : <p className="mt-3">Предстоящих встреч пока нет.</p>}</div>
         <div><h2 className="text-2xl font-bold">Создать тип встречи</h2><form className="mt-4 grid max-w-lg gap-3" onSubmit={(event) => void createType(event)}><label>id (неизменяемый идентификатор для ссылок и записей)<input name="id" required pattern="[a-z0-9\\-]{1,64}" maxLength={64} className="block w-full rounded border p-2" /></label><label>Название<input name="name" required maxLength={100} className="block w-full rounded border p-2" /></label><label>Описание<textarea name="description" required maxLength={1000} className="block w-full rounded border p-2" /></label><label>Длительность (мин.)<input name="duration" type="number" min="1" max="540" step="1" required className="block w-full rounded border p-2" /></label><button className="rounded-lg bg-orange-600 p-3 text-white">Создать</button></form></div>
         <div><h2 className="text-2xl font-bold">Типы встреч</h2>{types.length ? <ul className="mt-3 space-y-3">{types.map((item) => <li key={item.id} className="rounded-xl border bg-white p-4">

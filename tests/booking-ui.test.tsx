@@ -276,3 +276,64 @@ it('shows the number of upcoming calls per Moscow date and updates it after dele
     await closeServer(app)
   }
 })
+
+it('reminds the owner within 30 minutes while upcoming is open and removes it after the call starts', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-13T05:59:00Z'))
+  const app = await server(() => new Date('2026-11-13T05:59:00Z'))
+  const schedule = vi.spyOn(window, 'setTimeout')
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: {
+      id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30,
+    } })
+    await app.inject({ method: 'POST', url: '/api/bookings', payload: {
+      eventTypeId: 'intro', startsAt: '2026-11-13T06:30:00Z',
+      guestName: 'Гость', guestEmail: 'guest@example.com',
+    } })
+    window.location.hash = '#/upcoming'
+    render(<App />)
+    expect(await screen.findByText(/Гость · guest@example.com/)).toBeTruthy()
+    expect(screen.queryByRole('status')).toBeNull()
+    const startReminder = schedule.mock.calls.find(([, delay]) => delay === 60_000)?.[0]
+    expect(startReminder).toBeTypeOf('function')
+    vi.setSystemTime(new Date('2026-11-13T06:00:00Z'))
+    act(() => { if (typeof startReminder === 'function') startReminder() })
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', expect.stringContaining('Напоминание'))
+    const endReminder = schedule.mock.calls.find(([, delay]) => delay === 30 * 60_000)?.[0]
+    expect(endReminder).toBeTypeOf('function')
+    vi.setSystemTime(new Date('2026-11-13T06:30:00Z'))
+    act(() => { if (typeof endReminder === 'function') endReminder() })
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+    expect(screen.queryByText(/Гость · guest@example.com/)).toBeNull()
+  } finally {
+    schedule.mockRestore()
+    vi.useRealTimers()
+    await closeServer(app)
+  }
+})
+
+it('removes the reminder immediately when the owner deletes the booking', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-13T06:15:00Z'))
+  const app = await server(() => new Date('2026-11-13T06:15:00Z'))
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  try {
+    await app.inject({ method: 'POST', url: '/api/event-types', payload: {
+      id: 'intro', name: 'Знакомство', description: 'Поговорим', durationMinutes: 30,
+    } })
+    await app.inject({ method: 'POST', url: '/api/bookings', payload: {
+      eventTypeId: 'intro', startsAt: '2026-11-13T06:30:00Z',
+      guestName: 'Гость', guestEmail: 'guest@example.com',
+    } })
+    window.location.hash = '#/upcoming'
+    render(<App />)
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', expect.stringContaining('Напоминание'))
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить запись' }))
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+    expect(screen.getByText('Предстоящих встреч пока нет.')).toBeTruthy()
+  } finally {
+    confirm.mockRestore()
+    vi.useRealTimers()
+    await closeServer(app)
+  }
+})

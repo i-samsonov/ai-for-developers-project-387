@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/i-samsonov/ai-for-developers-project-387/compare/v1.1.0...v1.2.0) (2026-11-13)
+
+
+### Features
+
+* remind owner of calls in the open app ([4fac52f](https://github.com/i-samsonov/ai-for-developers-project-387/commit/4fac52f6dc39f2e203b04e35ed83eb536da4376e))
+
 ## [1.1.0](https://github.com/i-samsonov/ai-for-developers-project-387/compare/v1.0.0...v1.1.0) (2026-11-13)
 
 

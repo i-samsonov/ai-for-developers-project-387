@@ -96,6 +96,18 @@ jobs:
             printf 'Агент не запускался: добавьте секрет DEEPSEEK_API_KEY в Actions.\n' > audit-reports/conclusion.md
             exit 1
           fi
+          if ! status="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
+            --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $DEEPSEEK_API_KEY" \
+            https://api.deepseek.com/models)"; then
+            printf 'Агент не запускался: не удалось проверить ключ DeepSeek (сеть/API).\n' > audit-reports/conclusion.md
+            exit 1
+          fi
+          if [ "$status" != 200 ]; then
+            printf 'Агент не запускался: DeepSeek вернул HTTP %s при проверке ключа. Проверьте DEEPSEEK_API_KEY в Actions.\n' \
+              "$status" > audit-reports/conclusion.md
+            exit 1
+          fi
 
       - name: Analyze and publish finding
         if: success()

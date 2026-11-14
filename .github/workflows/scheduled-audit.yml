@@ -105,7 +105,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
         with:
-          model: deepseek/deepseek-v4-flash
+          model: deepseek/deepseek-flash
           use_github_token: true
           share: "false"
           prompt: |

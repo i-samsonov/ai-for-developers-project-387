@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - src/App.tsx
+      - scripts/browser-contrast.mjs
+      - .github/workflows/browser-contrast.yml
+      - package.json
+      - package-lock.json
   workflow_dispatch:
 
 permissions:
@@ -16,7 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify checked-out head
+        env:
+          EVIDENCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EVIDENCE_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

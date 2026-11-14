@@ -56,9 +56,10 @@ async function contrast(page, locator, name, hover = false) {
 }
 
 let browser
+let page
 try {
   browser = await chromium.launch({ headless: true })
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   await page.goto(baseUrl)
   const cta = page.locator('main a[href="#/booking"]')
   await contrast(page, cta, 'Записаться')
@@ -82,9 +83,11 @@ try {
   await freeSlot.click()
   const continueButton = page.getByRole('button', { name: 'Продолжить' })
   await contrast(page, continueButton, 'Продолжить')
+  await contrast(page, continueButton, 'Продолжить', true)
   await continueButton.click()
   const confirmButton = page.getByRole('button', { name: 'Подтвердить запись' })
   await contrast(page, confirmButton, 'Подтвердить запись')
+  await contrast(page, confirmButton, 'Подтвердить запись', true)
   await page.getByRole('textbox', { name: 'Имя' }).fill('Тестовый гость')
   await page.getByRole('textbox', { name: 'Email' }).fill('browser@example.com')
   await page.screenshot({ path: `${output}/booking.png`, fullPage: true })
@@ -103,16 +106,25 @@ try {
   for (const value of ['Браузерная проверка', 'Тестовый гость', 'browser@example.com', slotTime]) {
     if (!bookingText.includes(value)) throw new Error(`Owner booking is missing ${value}`)
   }
-  if (bookingText.includes('Тема разговора:')) throw new Error('Booking without topic has a placeholder')
+  if (/Тема разговора/.test(bookingText)) throw new Error('Booking without topic has a placeholder')
   evidence.checks.push('Запись без темы видна владельцу с типом, временем и контактами')
   const createButton = page.getByRole('button', { name: 'Создать', exact: true })
   await contrast(page, createButton, 'Создать')
+  await contrast(page, createButton, 'Создать', true)
   await page.getByRole('button', { name: 'Редактировать' }).first().click()
   const saveButton = page.getByRole('button', { name: 'Сохранить', exact: true })
   await contrast(page, saveButton, 'Сохранить')
+  await contrast(page, saveButton, 'Сохранить', true)
   await page.screenshot({ path: `${output}/upcoming.png`, fullPage: true })
 } catch (error) {
   evidence.errors.push(error instanceof Error ? error.stack ?? error.message : String(error))
+  if (page) {
+    try {
+      await page.screenshot({ path: `${output}/failure.png`, fullPage: true })
+    } catch (screenshotError) {
+      evidence.errors.push(`Could not capture failure screenshot: ${String(screenshotError)}`)
+    }
+  }
 } finally {
   await browser?.close()
   evidence.passed = evidence.errors.length === 0

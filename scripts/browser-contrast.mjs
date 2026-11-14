@@ -19,7 +19,12 @@ const dateLabel = (day) => new Intl.DateTimeFormat('ru-RU', {
 
 async function contrast(page, locator, name, hover = false) {
   await locator.waitFor()
-  if (hover) await locator.hover()
+  if (hover) {
+    await locator.hover()
+    await locator.evaluate(async (element) => {
+      await Promise.all(element.getAnimations().map((animation) => animation.finished))
+    })
+  }
   const colors = await locator.evaluate((element) => {
     const style = getComputedStyle(element)
     const canvas = document.createElement('canvas')
@@ -72,6 +77,8 @@ try {
   await contrast(page, selectedDay, 'Выбранный день')
   const freeSlot = page.getByRole('button', { name: /Свободно/ }).first()
   await freeSlot.waitFor()
+  const slotTime = (await freeSlot.innerText()).match(/\d{2}:\d{2}/)?.[0]
+  if (!slotTime) throw new Error('Cannot read selected slot time')
   await freeSlot.click()
   const continueButton = page.getByRole('button', { name: 'Продолжить' })
   await contrast(page, continueButton, 'Продолжить')
@@ -83,14 +90,21 @@ try {
   await page.screenshot({ path: `${output}/booking.png`, fullPage: true })
   await confirmButton.click()
   await page.getByText('Бронь подтверждена. До встречи!').waitFor()
+  if (await page.getByText('Тема разговора', { exact: false }).count()) throw new Error('Guest confirmation unexpectedly shows a topic')
   evidence.checks.push('Бронирование без темы через браузер и API успешно')
   const repeatButton = page.getByRole('button', { name: 'Забронировать еще' })
   await contrast(page, repeatButton, 'Забронировать еще')
   await contrast(page, repeatButton, 'Забронировать еще', true)
   await page.screenshot({ path: `${output}/confirmed.png`, fullPage: true })
   await page.goto(`${baseUrl}/#/upcoming`)
-  await page.getByText('browser@example.com').waitFor()
-  evidence.checks.push('Запись без темы видна владельцу')
+  const booking = page.locator('li', { hasText: 'browser@example.com' })
+  await booking.waitFor()
+  const bookingText = await booking.innerText()
+  for (const value of ['Браузерная проверка', 'Тестовый гость', 'browser@example.com', slotTime]) {
+    if (!bookingText.includes(value)) throw new Error(`Owner booking is missing ${value}`)
+  }
+  if (bookingText.includes('Тема разговора:')) throw new Error('Booking without topic has a placeholder')
+  evidence.checks.push('Запись без темы видна владельцу с типом, временем и контактами')
   const createButton = page.getByRole('button', { name: 'Создать', exact: true })
   await contrast(page, createButton, 'Создать')
   await page.getByRole('button', { name: 'Редактировать' }).first().click()

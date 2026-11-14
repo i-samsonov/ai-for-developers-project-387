@@ -3,7 +3,9 @@ name: Browser contrast evidence
 on:
   pull_request:
     paths:
-      - src/App.tsx
+      - src/**
+      - index.html
+      - vite.config.*
       - scripts/browser-contrast.mjs
       - .github/workflows/browser-contrast.yml
       - package.json

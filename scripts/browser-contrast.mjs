@@ -75,7 +75,12 @@ try {
   await page.getByRole('button', { name: /Браузерная проверка/ }).click()
   await page.getByRole('button', { name: dateLabel(tomorrow()) }).click()
   const selectedDay = page.locator('button[aria-pressed="true"]').first()
+  await page.mouse.move(0, 0)
+  await selectedDay.evaluate(async (element) => {
+    await Promise.all(element.getAnimations().map((animation) => animation.finished))
+  })
   await contrast(page, selectedDay, 'Выбранный день')
+  await contrast(page, selectedDay, 'Выбранный день', true)
   const freeSlot = page.getByRole('button', { name: /Свободно/ }).first()
   await freeSlot.waitFor()
   const slotTime = (await freeSlot.innerText()).match(/\d{2}:\d{2}/)?.[0]

@@ -87,25 +87,13 @@ jobs:
           printf 'Агент не завершил анализ. Отчёт сохранён в page-audit-report: https://github.com/%s/actions/runs/%s\n' \
             "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > audit-reports/conclusion.md
 
-      - name: Verify DeepSeek credential
+      - name: Verify OpenCode credential
         if: success()
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          if [ -z "$DEEPSEEK_API_KEY" ]; then
-            printf 'Агент не запускался: добавьте секрет DEEPSEEK_API_KEY в Actions.\n' > audit-reports/conclusion.md
-            exit 1
-          fi
-          if ! status="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
-            --output /dev/null --write-out '%{http_code}' \
-            --header "Authorization: Bearer $DEEPSEEK_API_KEY" \
-            https://api.deepseek.com/models)"; then
-            printf 'Агент не запускался: не удалось проверить ключ DeepSeek (сеть/API).\n' > audit-reports/conclusion.md
-            exit 1
-          fi
-          if [ "$status" != 200 ]; then
-            printf 'Агент не запускался: DeepSeek вернул HTTP %s при проверке ключа. Проверьте DEEPSEEK_API_KEY в Actions.\n' \
-              "$status" > audit-reports/conclusion.md
+          if [ -z "$OPENCODE_API_KEY" ]; then
+            printf 'Агент не запускался: добавьте секрет OPENCODE_API_KEY в Actions.\n' > audit-reports/conclusion.md
             exit 1
           fi
 
@@ -113,11 +101,11 @@ jobs:
         if: success()
         uses: anomalyco/opencode/github@latest
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
         with:
-          model: deepseek/deepseek-flash
+          model: opencode/big-pickle
           use_github_token: true
           share: "false"
           prompt: |

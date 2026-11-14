@@ -22,7 +22,7 @@ concurrency:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -100,6 +100,13 @@ jobs:
             Ссылка на прогон: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}.
             Проверяемое приложение: ${{ vars.APP_URL }} (в demo-режиме адрес
             указан в самом отчёте). Работай только с Issues этого репозитория.
+            Все файлы, которые ты читаешь или создаёшь, должны находиться
+            ТОЛЬКО в checkout репозитория. Для черновика issue используй
+            audit-reports/issue-body.md или gh issue create --body; НЕ используй
+            /tmp, $RUNNER_TEMP, домашний каталог или другие внешние пути:
+            OpenCode запросит разрешение, а в Actions некому его подтвердить.
+            Если публикация невозможна, сохрани причину в
+            audit-reports/conclusion.md и заверши работу без issue.
 
             При отсутствии данных напиши «нет данных», не утверждай, что дефект
             исправлен. Для live-отчёта выделяй лишь конкретные проверяемые
